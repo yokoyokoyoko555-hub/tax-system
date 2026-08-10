@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}古物台帳の内訳復元{% endblock %}
+{% block content %}
+<h1>古物台帳の内訳復元</h1>
+<p class="lead">
+  取込ID {{ imp.id }}（古物台帳 / {{ imp.source_name }}）のうち商品名が空欄の行について、
+  相対表からわかる内訳（確定）と、期末在庫表から手動で選んだ内訳（手動）を管理します。<br>
+  すべての行で内訳の合計が元の金額と一致すると、内訳付きの古物台帳を出力できます。
+</p>
+
+{% if not breakdown %}
+<p class="muted">商品名が空欄の行はありません。</p>
+{% else %}
+
+{% for b in breakdown %}
+<div class="card {{ 'success-box' if b.resolved else '' }}">
+  <h2>{{ b.row_no }}行目 — {{ b.name }} / {{ b.date }} / 合計 {{ b.total }}円</h2>
+
+  <table>
+    <thead><tr><th>商品名</th><th>数量</th><th>単価</th><th>金額</th><th>由来</th><th></th></tr></thead>
+    <tbody>
+      {% for item in b.known_items %}
+      <tr>
+        <td>{{ item.product }}</td>
+        <td>{{ item.qty }}</td>
+        <td>{{ item.unit_cost if item.unit_cost is not none else "在庫表になし" }}</td>
+        <td>{{ item.amount if item.amount is not none else "-" }}</td>
+        <td>相対表（確定）</td>
+        <td></td>
+      </tr>
+      {% endfor %}
+      {% for item in b.manual_items %}
+      <tr>
+        <td>{{ item.product }}</td>
+        <td>{{ item.qty }}</td>
+        <td>{{ item.unit_cost }}</td>
+        <td>{{ item.amount }}</td>
+        <td>手動</td>
+        <td>
+          <form method="post" action="{{ url_for('ledger_completion_remove', import_id=imp.id, row_no=b.row_no, item_id=item.id) }}">
+            <button type="submit" class="button small">削除</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not b.known_items and not b.manual_items %}
+      <tr><td colspan="6" class="muted">まだ内訳がありません</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+
+  <p>
+    {% if b.resolved %}
+      残額 0円（合計と一致しています）
+    {% else %}
+      残額 {{ b.remainder }}円（期末在庫表から選んで埋めてください）
+    {% endif %}
+  </p>
+
+  {% if not b.resolved %}
+  <form method="get" action="{{ url_for('ledger_completion_view', import_id=imp.id) }}">
+    <input type="hidden" name="search_row" value="{{ b.row_no }}">
+    <input type="text" name="q" placeholder="商品名で検索" value="{{ query if search_row == b.row_no else '' }}">
+    <button type="submit" class="button small">検索</button>
+  </form>
+  {% if search_row == b.row_no %}
+    {% if search_results %}
+    <div>
+      {% for r in search_results %}
+      <form method="post" action="{{ url_for('ledger_completion_add', import_id=imp.id, row_no=b.row_no) }}"
+            style="display:flex; gap:0.5rem; align-items:center; margin:0.4rem 0;">
+        <input type="hidden" name="product" value="{{ r.product }}">
+        <span style="flex:1;">{{ r.product }}（仕入れ原価 {{ r.unit_cost }}円）</span>
+        <input type="number" name="qty" step="any" min="0" required placeholder="数量" style="width:6em;">
+        <button type="submit" class="button small">追加</button>
+      </form>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="muted">該当する商品が期末在庫表に見つかりません</p>
+    {% endif %}
+  {% endif %}
+  {% endif %}
+</div>
+{% endfor %}
+
+<form method="post" action="{{ url_for('ledger_completion_export', import_id=imp.id) }}">
+  <button type="submit" class="button" {% if not all_resolved %}disabled{% endif %}>内訳を復元した古物台帳を出力する</button>
+  {% if not all_resolved %}<p class="muted">すべての行の残額が0円になってから出力できます。</p>{% endif %}
+</form>
+
+{% endif %}
+
+<p class="muted"><a href="{{ url_for('validate_import', import_id=imp.id) }}">チェック結果に戻る</a></p>
+{% endblock %}

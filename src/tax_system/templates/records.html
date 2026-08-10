@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}取込データの内容{% endblock %}
+{% block content %}
+<h1>取込データの内容</h1>
+<p class="lead">
+  取込ID {{ imp.id }}（{{ kind_labels[imp.kind] }} / {{ imp.source_name }} / {{ imp.imported_at }}）<br>
+  全 {{ total }} 件
+</p>
+
+{% if sheets %}
+<p>
+  {% for s in sheets %}
+    {% if s == sheet %}
+      <strong>{{ s }}</strong>
+    {% else %}
+      <a href="{{ url_for('records_view', import_id=imp.id, sheet=s) }}">{{ s }}</a>
+    {% endif %}
+    {% if not loop.last %} | {% endif %}
+  {% endfor %}
+</p>
+{% endif %}
+
+<div class="card" style="overflow-x:auto;">
+  <table>
+    <thead>
+      <tr>
+        <th>行</th>
+        {% if flat_columns %}
+          {% for col in flat_columns %}<th>{{ col }}</th>{% endfor %}
+        {% else %}
+          {% for h in headers %}<th>{{ h }}</th>{% endfor %}
+        {% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.row_no }}</td>
+        {% if flat_columns %}
+          {% for col in flat_columns %}<td>{{ row.data.get(col, "") }}</td>{% endfor %}
+        {% else %}
+          {% for v in row.cells %}<td>{{ v if v is not none else "" }}</td>{% endfor %}
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if total_pages > 1 %}
+<p class="muted">
+  {% if page > 1 %}<a href="{{ url_for('records_view', import_id=imp.id, sheet=sheet, page=page-1) }}">← 前へ</a>{% endif %}
+  {{ page }} / {{ total_pages }} ページ
+  {% if page < total_pages %}<a href="{{ url_for('records_view', import_id=imp.id, sheet=sheet, page=page+1) }}">次へ →</a>{% endif %}
+</p>
+{% endif %}
+
+<p class="muted"><a href="{{ url_for('validate_import', import_id=imp.id) }}">チェック結果に戻る</a></p>
+{% endblock %}

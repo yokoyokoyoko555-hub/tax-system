@@ -18,6 +18,7 @@ from openpyxl import load_workbook
 
 
 LEDGER_COLUMNS = ["日時", "名前", "ふりがな", "生年月日", "住所", "電話番号", "商品名", "個数", "単価", "金額", "備考"]
+INVENTORY_COLUMNS = ["商品名", "仕入れ原価", "在庫数"]
 
 
 def sha256(path: Path) -> str:
@@ -117,6 +118,11 @@ class TaxSystem:
                   candidates_json TEXT NOT NULL, note TEXT, created_at TEXT NOT NULL,
                   UNIQUE(sale_import_id, sale_sheet, sale_row_no)
                 );
+                CREATE TABLE IF NOT EXISTS ledger_items(
+                  id INTEGER PRIMARY KEY, ledger_import_id INTEGER NOT NULL, ledger_row_no INTEGER NOT NULL,
+                  product TEXT NOT NULL, qty REAL NOT NULL, unit_cost REAL NOT NULL, amount REAL NOT NULL,
+                  source TEXT NOT NULL, created_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -202,6 +208,20 @@ class TaxSystem:
                 records.append({"sheet": ws.title, "row_no": row_no, "values": values})
         return self._save_import("comparison", source, records, {"sheets": sheets})
 
+    def import_inventory(self, source: str | Path) -> int:
+        self.initialize()
+        source = Path(source).resolve(strict=True)
+        raw = source.read_bytes()
+        try:
+            text, encoding = raw.decode("utf-8-sig"), "utf-8-sig"
+        except UnicodeDecodeError:
+            text, encoding = raw.decode("cp932"), "cp932"
+        reader = csv.DictReader(text.splitlines())
+        if reader.fieldnames != INVENTORY_COLUMNS:
+            raise ValueError(f"期末在庫表の列が想定と一致しません（{INVENTORY_COLUMNS}）: {reader.fieldnames}")
+        rows = list(reader)
+        return self._save_import("inventory", source, rows, {"encoding": encoding, "columns": reader.fieldnames})
+
     def _save_import(self, kind: str, source: Path, rows: Iterable[dict[str, Any]], metadata: dict[str, Any]) -> int:
         now = datetime.now().isoformat(timespec="seconds")
         rows = list(rows)
@@ -233,8 +253,34 @@ class TaxSystem:
 
     def get_import(self, import_id: int) -> dict[str, Any] | None:
         with closing(self.connect()) as db, db:
-            row = db.execute("SELECT id, kind, source_name, imported_at FROM imports WHERE id=?", (import_id,)).fetchone()
-        return dict(row) if row else None
+            row = db.execute(
+                "SELECT id, kind, source_name, imported_at, metadata_json FROM imports WHERE id=?", (import_id,)
+            ).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        data["metadata"] = json.loads(data.pop("metadata_json"))
+        return data
+
+    def get_records(self, import_id: int, sheet: str | None = None, offset: int = 0,
+                    limit: int = 100) -> tuple[list[dict[str, Any]], int]:
+        where = "import_id=?"
+        params: list[Any] = [import_id]
+        if sheet is not None:
+            where += " AND sheet_name=?"
+            params.append(sheet)
+        with closing(self.connect()) as db, db:
+            total = db.execute(f"SELECT COUNT(*) FROM records WHERE {where}", params).fetchone()[0]
+            rows = db.execute(
+                f"SELECT * FROM records WHERE {where} ORDER BY sheet_name, row_no LIMIT ? OFFSET ?",
+                params + [limit, offset],
+            ).fetchall()
+        results = []
+        for row in rows:
+            item = dict(row)
+            item["data"] = json.loads(item.pop("data_json"))
+            results.append(item)
+        return results, total
 
     def list_exports(self) -> list[dict[str, Any]]:
         with closing(self.connect()) as db, db:
@@ -251,9 +297,25 @@ class TaxSystem:
             records = db.execute("SELECT * FROM records WHERE import_id=? ORDER BY sheet_name,row_no", (import_id,)).fetchall()
         if imp["kind"] == "ledger":
             return self._validate_ledger(records)
+        if imp["kind"] == "inventory":
+            return self._validate_inventory(records)
         checks = self._validate_comparison(records, json.loads(imp["metadata_json"]))
         checks.extend(self._validate_allocations(import_id))
         return checks
+
+    def _validate_inventory(self, records: Iterable[sqlite3.Row]) -> list[CheckResult]:
+        results: list[CheckResult] = []
+        for record in records:
+            data = json.loads(record["data_json"])
+            row_no = record["row_no"]
+            for key in INVENTORY_COLUMNS:
+                if data.get(key) in (None, ""):
+                    results.append(CheckResult("REQUIRED", "error", f"必須項目「{key}」が空欄です", row_no=row_no))
+            if data.get("仕入れ原価") not in (None, "") and _to_number(data.get("仕入れ原価")) is None:
+                results.append(CheckResult("NUMBER_FORMAT", "error", "仕入れ原価を数値として解釈できません", row_no=row_no))
+            if data.get("在庫数") not in (None, "") and _to_number(data.get("在庫数")) is None:
+                results.append(CheckResult("NUMBER_FORMAT", "error", "在庫数を数値として解釈できません", row_no=row_no))
+        return results
 
     def _validate_ledger(self, records: Iterable[sqlite3.Row]) -> list[CheckResult]:
         results: list[CheckResult] = []
@@ -491,6 +553,173 @@ class TaxSystem:
                 """,
                 (comparison_import_id, sheet, row_no, ledger_record_id, "manual", "[]", None, now),
             )
+
+    def _latest_inventory(self) -> dict[str, float]:
+        with closing(self.connect()) as db, db:
+            imp = db.execute(
+                "SELECT id FROM imports WHERE kind='inventory' ORDER BY imported_at DESC LIMIT 1"
+            ).fetchone()
+            if not imp:
+                return {}
+            rows = db.execute("SELECT data_json FROM records WHERE import_id=?", (imp["id"],)).fetchall()
+        costs: dict[str, float] = {}
+        for row in rows:
+            data = json.loads(row["data_json"])
+            product = (data.get("商品名") or "").strip()
+            cost = _to_number(data.get("仕入れ原価"))
+            if product and cost is not None:
+                costs[product] = cost
+        return costs
+
+    def search_inventory(self, query: str, limit: int = 30) -> list[dict[str, Any]]:
+        query = query.strip()
+        if not query:
+            return []
+        result = []
+        for product, cost in self._latest_inventory().items():
+            if query in product:
+                result.append({"product": product, "unit_cost": cost})
+                if len(result) >= limit:
+                    break
+        return result
+
+    def propose_ledger_breakdown(self, ledger_import_id: int) -> list[dict[str, Any]]:
+        """商品名が空欄の古物台帳の行について、相対表から判明している内訳（確定）と、
+        まだ手動で埋めていない残額（要確認）を計算する。金額の内訳は書き換えず、
+        常にこの場で再計算するため、相対表・在庫表を取込み直すと結果も更新される。
+        """
+        with closing(self.connect()) as db, db:
+            imp = db.execute("SELECT * FROM imports WHERE id=?", (ledger_import_id,)).fetchone()
+            if not imp or imp["kind"] != "ledger":
+                raise ValueError("古物台帳の取込IDを指定してください")
+            ledger_records = db.execute(
+                "SELECT * FROM records WHERE import_id=? ORDER BY row_no", (ledger_import_id,)
+            ).fetchall()
+            comparison_rows = db.execute(
+                "SELECT r.import_id, r.sheet_name, r.data_json FROM records r "
+                "JOIN imports i ON r.import_id = i.id WHERE i.kind='comparison'"
+            ).fetchall()
+            comparison_metadata = {
+                row["id"]: json.loads(row["metadata_json"])
+                for row in db.execute("SELECT id, metadata_json FROM imports WHERE kind='comparison'").fetchall()
+            }
+            manual_items = db.execute(
+                "SELECT * FROM ledger_items WHERE ledger_import_id=? ORDER BY id", (ledger_import_id,)
+            ).fetchall()
+
+        inventory = self._latest_inventory()
+
+        comparison_by_key: dict[tuple[str, date | None], list[dict[str, Any]]] = {}
+        for row in comparison_rows:
+            metadata = comparison_metadata.get(row["import_id"], {})
+            headers = next((s["headers"] for s in metadata.get("sheets", []) if s["name"] == row["sheet_name"]), None)
+            if not headers:
+                continue
+            split = next((i for i, h in enumerate(headers) if i > 0 and h == "年月日"), None)
+            if split is None:
+                continue
+            values = json.loads(row["data_json"])["values"]
+            purchase, sale = values[:split], values[split:]
+            if sale[0] in (None, ""):
+                continue
+            purchase_headers = headers[:split]
+            product_idx = _index_of(purchase_headers, "品目")
+            qty_idx = _index_of(purchase_headers, "数量")
+            name_idx = _index_of(purchase_headers, "相手方名")
+            if product_idx is None or name_idx is None:
+                continue
+            product = str(purchase[product_idx]).strip() if purchase[product_idx] not in (None, "") else None
+            counterparty = str(purchase[name_idx]).strip() if purchase[name_idx] not in (None, "") else None
+            qty = _to_number(purchase[qty_idx]) if qty_idx is not None else None
+            purchase_date = _to_date(purchase[0])
+            if not product or not counterparty:
+                continue
+            comparison_by_key.setdefault((counterparty, purchase_date), []).append({"product": product, "qty": qty or 0})
+
+        manual_by_row: dict[int, list[dict[str, Any]]] = {}
+        for item in manual_items:
+            manual_by_row.setdefault(item["ledger_row_no"], []).append(dict(item))
+
+        results: list[dict[str, Any]] = []
+        for record in ledger_records:
+            data = json.loads(record["data_json"])
+            if data.get("商品名") not in (None, ""):
+                continue
+            row_no = record["row_no"]
+            name = (data.get("名前") or "").strip()
+            purchase_date = _to_date(data.get("日時"))
+            total = _to_number(data.get("金額"))
+
+            known = []
+            for entry in comparison_by_key.get((name, purchase_date), []):
+                cost = inventory.get(entry["product"])
+                qty = entry["qty"]
+                known.append({
+                    "product": entry["product"], "qty": qty, "unit_cost": cost,
+                    "amount": (cost * qty) if cost is not None else None, "source": "comparison",
+                })
+            manual = [{
+                "id": item["id"], "product": item["product"], "qty": item["qty"],
+                "unit_cost": item["unit_cost"], "amount": item["amount"], "source": "manual",
+            } for item in manual_by_row.get(row_no, [])]
+
+            accounted = sum((i["amount"] or 0) for i in known + manual)
+            remainder = (total - accounted) if total is not None else None
+            results.append({
+                "row_no": row_no, "name": name, "date": purchase_date, "total": total,
+                "known_items": known, "manual_items": manual, "remainder": remainder,
+                "resolved": remainder is not None and abs(remainder) < 0.5,
+            })
+        return results
+
+    def add_ledger_item(self, ledger_import_id: int, row_no: int, product: str, qty: float) -> None:
+        cost = self._latest_inventory().get(product)
+        if cost is None:
+            raise ValueError(f"期末在庫表に「{product}」の仕入れ原価が見つかりません")
+        now = datetime.now().isoformat(timespec="seconds")
+        with closing(self.connect()) as db, db:
+            db.execute(
+                "INSERT INTO ledger_items(ledger_import_id, ledger_row_no, product, qty, unit_cost, amount, source, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (ledger_import_id, row_no, product, qty, cost, cost * qty, "manual", now),
+            )
+
+    def remove_ledger_item(self, item_id: int) -> None:
+        with closing(self.connect()) as db, db:
+            db.execute("DELETE FROM ledger_items WHERE id=? AND source='manual'", (item_id,))
+
+    def export_completed_ledger(self, ledger_import_id: int, output: str | Path) -> Path:
+        breakdown = self.propose_ledger_breakdown(ledger_import_id)
+        unresolved = [b for b in breakdown if not b["resolved"]]
+        if unresolved:
+            raise ValueError(f"{len(unresolved)}件の行で内訳の金額が合計と一致していません。先に確定してください")
+        breakdown_by_row = {b["row_no"]: b for b in breakdown}
+        with closing(self.connect()) as db, db:
+            records = db.execute(
+                "SELECT * FROM records WHERE import_id=? ORDER BY row_no", (ledger_import_id,)
+            ).fetchall()
+        output = Path(output).resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n", quoting=csv.QUOTE_MINIMAL)
+            writer.writeheader()
+            for record in records:
+                data = json.loads(record["data_json"])
+                entry = breakdown_by_row.get(record["row_no"])
+                if not entry:
+                    writer.writerow(data)
+                    continue
+                original_total = data.get("金額")
+                for item in entry["known_items"] + entry["manual_items"]:
+                    row = dict(data)
+                    row["商品名"] = item["product"]
+                    row["個数"] = item["qty"]
+                    row["単価"] = item["unit_cost"]
+                    row["金額"] = item["amount"]
+                    note = f"内訳復元（元合計{original_total}円・{'相対表' if item['source'] == 'comparison' else '手動'}）"
+                    row["備考"] = f"{data.get('備考') or ''} {note}".strip()
+                    writer.writerow(row)
+        return output
 
     def export(self, import_id: int, output: str | Path, template_id: int | None = None,
                preview: bool = False) -> Path:

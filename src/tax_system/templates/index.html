@@ -20,10 +20,18 @@
       {% for imp in imports %}
       <tr>
         <td>{{ imp.id }}</td>
-        <td>{{ "古物台帳" if imp.kind == "ledger" else "相対表" }}</td>
+        <td>{{ kind_labels[imp.kind] }}</td>
         <td>{{ imp.source_name }}</td>
         <td>{{ imp.imported_at }}</td>
-        <td><a class="button small" href="{{ url_for('validate_import', import_id=imp.id) }}">チェック・出力</a></td>
+        <td>
+          <a class="button small" href="{{ url_for('records_view', import_id=imp.id) }}">中身を見る</a>
+          {% if imp.kind != "inventory" %}
+          <a class="button small" href="{{ url_for('validate_import', import_id=imp.id) }}">チェック・出力</a>
+          {% endif %}
+          {% if imp.kind == "ledger" %}
+          <a class="button small" href="{{ url_for('ledger_completion_view', import_id=imp.id) }}">内訳復元</a>
+          {% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>

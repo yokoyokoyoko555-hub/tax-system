@@ -2,11 +2,17 @@
 {% block title %}チェック結果{% endblock %}
 {% block content %}
 <h1>チェック結果</h1>
-<p class="lead">取込ID {{ imp.id }}（{{ "古物台帳" if imp.kind == "ledger" else "相対表" }} / {{ imp.source_name }}）</p>
+<p class="lead">取込ID {{ imp.id }}（{{ kind_labels[imp.kind] }} / {{ imp.source_name }}）</p>
 
-{% if imp.kind == "comparison" %}
-<p><a href="{{ url_for('allocations_view', import_id=imp.id) }}">仕入との対応を確認・修正する →</a></p>
-{% endif %}
+<p>
+  <a href="{{ url_for('records_view', import_id=imp.id) }}">取込データの中身を見る →</a>
+  {% if imp.kind == "comparison" %}
+  ｜ <a href="{{ url_for('allocations_view', import_id=imp.id) }}">仕入との対応を確認・修正する →</a>
+  {% endif %}
+  {% if imp.kind == "ledger" %}
+  ｜ <a href="{{ url_for('ledger_completion_view', import_id=imp.id) }}">内訳を復元する →</a>
+  {% endif %}
+</p>
 
 {% if checks %}
   <section class="card">
@@ -32,6 +38,7 @@
   </section>
 {% endif %}
 
+{% if imp.kind != "inventory" %}
 <section class="card">
   <h2>出力</h2>
   <form method="post" action="{{ url_for('export_import', import_id=imp.id) }}">
@@ -60,4 +67,5 @@
     {% if has_errors %}<p class="muted">エラーがあるため、正式出力は選べません（確認用のみ）。</p>{% endif %}
   </form>
 </section>
+{% endif %}
 {% endblock %}
