@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tax-system"
+version = "0.1.0"
+description = "古物台帳・輸出免税販売相対表のローカル帳票管理"
+requires-python = ">=3.11"
+dependencies = ["openpyxl>=3.1,<4"]
+
+[project.scripts]
+tax-system = "tax_system.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

@@ -1,0 +1,51 @@
+# Sensitive business data (never commit)
+approval_histories_*.csv
+**/approval_histories_*.csv
+
+# Actual export / tax-free sales comparison tables
+*_輸出・免税販売.xlsx
+**/*_輸出・免税販売.xlsx
+
+# Local import/export data
+data/
+imports/
+exports/
+uploads/
+private/
+secrets/
+
+# Environment variables and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+service-account*.json
+
+# Local databases and temporary files
+*.db
+*.sqlite
+*.sqlite3
+*.tmp
+*.bak
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Application runtime (contains confidential records and template snapshots)
+.tax-system/
+.tax-system-*/
+runtime/
+output/
+outputs/
+.tax-system-work/
