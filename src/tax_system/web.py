@@ -87,6 +87,30 @@ def create_app(home: str | Path | None = None) -> Flask:
         return render_template("validate.html", imp=imp, checks=checks, templates=templates,
                                has_errors=any(c.level == "error" for c in checks))
 
+    @app.route("/allocations/<int:import_id>")
+    def allocations_view(import_id: int):
+        ts = system()
+        imp = ts.get_import(import_id)
+        if not imp or imp["kind"] != "comparison":
+            abort(404)
+        results = ts.allocate(import_id)
+        search_sheet = request.args.get("search_sheet")
+        search_row = request.args.get("search_row", type=int)
+        query = request.args.get("q", "").strip()
+        search_results = ts.search_ledger(query) if query else []
+        return render_template(
+            "allocations.html", imp=imp, results=results,
+            search_sheet=search_sheet, search_row=search_row, query=query, search_results=search_results,
+        )
+
+    @app.route("/allocations/<int:import_id>/<sheet>/<int:row_no>", methods=["POST"])
+    def allocations_set(import_id: int, sheet: str, row_no: int):
+        ts = system()
+        raw = request.form.get("ledger_record_id")
+        ts.set_manual_allocation(import_id, sheet, row_no, int(raw) if raw else None)
+        flash("仕入との対応を保存しました", "success")
+        return redirect(url_for("allocations_view", import_id=import_id))
+
     @app.route("/export/<int:import_id>", methods=["POST"])
     def export_import(import_id: int):
         ts = system()

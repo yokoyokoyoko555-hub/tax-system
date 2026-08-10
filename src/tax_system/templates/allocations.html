@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}仕入との対応{% endblock %}
+{% block content %}
+<h1>仕入との対応確認</h1>
+<p class="lead">
+  取込ID {{ imp.id }}（相対表 / {{ imp.source_name }}）の各販売行について、対応する古物台帳の購入記録を自動で探しています。<br>
+  候補が複数ある行・見つからない行は、右側から手動で選んでください。
+</p>
+
+<table>
+  <thead>
+    <tr><th>行</th><th>シート</th><th>品目</th><th>状態</th><th>自動／手動で対応した仕入</th><th>手動で選び直す</th></tr>
+  </thead>
+  <tbody>
+    {% for r in results %}
+    <tr class="{{ 'level-error' if r.status in ('ambiguous', 'not_found') or (r.status == 'matched' and r.note) else '' }}">
+      <td>{{ r.row_no }}</td>
+      <td>{{ r.sheet }}</td>
+      <td>{{ r.product or "-" }}</td>
+      <td>
+        {% if r.status == 'matched' and not r.note %}一致{% endif %}
+        {% if r.status == 'matched' and r.note %}要確認（{{ r.note }}）{% endif %}
+        {% if r.status == 'manual' %}手動設定済み{% endif %}
+        {% if r.status == 'ambiguous' %}候補複数（未選択）{% endif %}
+        {% if r.status == 'not_found' %}見つかりません{% endif %}
+      </td>
+      <td>
+        {% if r.ledger %}
+          {{ r.ledger.name }} / {{ r.ledger.product }} / {{ r.ledger.date }} / {{ r.ledger.qty }}個 / {{ r.ledger.amount }}円
+        {% else %}
+          -
+        {% endif %}
+      </td>
+      <td>
+        {% if r.candidates %}
+        <form method="post" action="{{ url_for('allocations_set', import_id=imp.id, sheet=r.sheet, row_no=r.row_no) }}">
+          <select name="ledger_record_id" required>
+            <option value="">候補から選択</option>
+            {% for c in r.candidates %}
+            <option value="{{ c.id }}">{{ c.name }} / {{ c.product }} / {{ c.date }} / {{ c.qty }}個 / {{ c.amount }}円</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="button small">この仕入に決定</button>
+        </form>
+        {% elif r.status == 'matched' and r.ledger %}
+        <form method="post" action="{{ url_for('allocations_set', import_id=imp.id, sheet=r.sheet, row_no=r.row_no) }}">
+          <input type="hidden" name="ledger_record_id" value="{{ r.ledger.id }}">
+          <button type="submit" class="button small">この内容で確定する</button>
+        </form>
+        {% elif r.status == 'not_found' %}
+        <form method="get" action="{{ url_for('allocations_view', import_id=imp.id) }}">
+          <input type="hidden" name="search_sheet" value="{{ r.sheet }}">
+          <input type="hidden" name="search_row" value="{{ r.row_no }}">
+          <input type="text" name="q" placeholder="商品名・氏名で検索"
+                 value="{{ query if (search_sheet == r.sheet and search_row == r.row_no) else '' }}">
+          <button type="submit" class="button small">検索</button>
+        </form>
+        {% if search_sheet == r.sheet and search_row == r.row_no %}
+          {% if search_results %}
+          <form method="post" action="{{ url_for('allocations_set', import_id=imp.id, sheet=r.sheet, row_no=r.row_no) }}">
+            <select name="ledger_record_id" required>
+              <option value="">検索結果から選択</option>
+              {% for c in search_results %}
+              <option value="{{ c.id }}">{{ c.name }} / {{ c.product }} / {{ c.date }} / {{ c.qty }}個 / {{ c.amount }}円</option>
+              {% endfor %}
+            </select>
+            <button type="submit" class="button small">この仕入に決定</button>
+          </form>
+          {% else %}
+          <p class="muted">該当する古物台帳の記録が見つかりません（未使用のもののみ表示）</p>
+          {% endif %}
+        {% endif %}
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<p class="muted"><a href="{{ url_for('validate_import', import_id=imp.id) }}">チェック結果に戻る</a></p>
+{% endblock %}

@@ -4,12 +4,13 @@ import csv
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -29,6 +30,43 @@ def sha256(path: Path) -> str:
 
 def json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _to_number(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(str(value).replace(",", "").strip())
+    except ValueError:
+        return None
+
+
+def _to_date(value: Any) -> date | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    match = re.match(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", str(value).strip())
+    if not match:
+        return None
+    year, month, day = (int(part) for part in match.groups())
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _index_of(headers: list[Any], name: str, contains: bool = False) -> int | None:
+    for index, header in enumerate(headers):
+        if header is None:
+            continue
+        if contains and name in str(header):
+            return index
+        if not contains and header == name:
+            return index
+    return None
 
 
 @dataclass
@@ -72,6 +110,12 @@ class TaxSystem:
                   id INTEGER PRIMARY KEY, import_id INTEGER NOT NULL, template_id INTEGER,
                   mode TEXT NOT NULL, output_name TEXT NOT NULL, output_sha256 TEXT NOT NULL,
                   checks_json TEXT NOT NULL, created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS allocations(
+                  id INTEGER PRIMARY KEY, sale_import_id INTEGER NOT NULL, sale_sheet TEXT NOT NULL,
+                  sale_row_no INTEGER NOT NULL, ledger_record_id INTEGER, status TEXT NOT NULL,
+                  candidates_json TEXT NOT NULL, note TEXT, created_at TEXT NOT NULL,
+                  UNIQUE(sale_import_id, sale_sheet, sale_row_no)
                 );
                 """
             )
@@ -205,7 +249,11 @@ class TaxSystem:
             if not imp:
                 raise ValueError("取込IDが見つかりません")
             records = db.execute("SELECT * FROM records WHERE import_id=? ORDER BY sheet_name,row_no", (import_id,)).fetchall()
-        return self._validate_ledger(records) if imp["kind"] == "ledger" else self._validate_comparison(records, json.loads(imp["metadata_json"]))
+        if imp["kind"] == "ledger":
+            return self._validate_ledger(records)
+        checks = self._validate_comparison(records, json.loads(imp["metadata_json"]))
+        checks.extend(self._validate_allocations(import_id))
+        return checks
 
     def _validate_ledger(self, records: Iterable[sqlite3.Row]) -> list[CheckResult]:
         results: list[CheckResult] = []
@@ -248,6 +296,201 @@ class TaxSystem:
                     if not isinstance(pq, str) and not isinstance(sq, str) and pq != sq:
                         results.append(CheckResult("QTY_MISMATCH", "error", "販売数量と対応仕入数量が一致しません", record["sheet_name"], record["row_no"]))
         return results
+
+    def _has_ledger_data(self) -> bool:
+        with closing(self.connect()) as db, db:
+            return db.execute("SELECT 1 FROM imports WHERE kind='ledger' LIMIT 1").fetchone() is not None
+
+    def _validate_allocations(self, comparison_import_id: int) -> list[CheckResult]:
+        if not self._has_ledger_data():
+            return [CheckResult("LEDGER_MISSING", "error", "古物台帳が未取込のため、仕入との対応を確認できません")]
+        checks: list[CheckResult] = []
+        for result in self.allocate(comparison_import_id):
+            if result["status"] == "matched" and result["note"]:
+                checks.append(CheckResult("ALLOCATION_MISMATCH", "error", f"対応する仕入記録と{result['note']}",
+                                          result["sheet"], result["row_no"]))
+            elif result["status"] == "ambiguous":
+                checks.append(CheckResult("ALLOCATION_AMBIGUOUS", "error",
+                                          result["note"] or "対応する仕入の候補が複数あります。手動で選択してください",
+                                          result["sheet"], result["row_no"]))
+            elif result["status"] == "not_found":
+                checks.append(CheckResult("ALLOCATION_NOT_FOUND", "error",
+                                          result["note"] or "対応する仕入が古物台帳に見つかりません",
+                                          result["sheet"], result["row_no"]))
+        return checks
+
+    def allocate(self, comparison_import_id: int) -> list[dict[str, Any]]:
+        """既存の相対表データ（仕入・販売が同じ行に書かれている）の仕入側について、
+        対応する古物台帳の購入記録を商品名・数量・日付・取引相手で自動的に探し、割り当てる。
+        1件の古物台帳記録は、どこかひとつの販売にしか対応付けない（使い回さない）。
+        """
+        with closing(self.connect()) as db, db:
+            imp = db.execute("SELECT * FROM imports WHERE id=?", (comparison_import_id,)).fetchone()
+            if not imp or imp["kind"] != "comparison":
+                raise ValueError("相対表の取込IDを指定してください")
+            metadata = json.loads(imp["metadata_json"])
+            records = db.execute(
+                "SELECT * FROM records WHERE import_id=? ORDER BY sheet_name, row_no", (comparison_import_id,)
+            ).fetchall()
+            ledger_rows = db.execute(
+                "SELECT r.id, r.data_json FROM records r JOIN imports i ON r.import_id = i.id WHERE i.kind='ledger'"
+            ).fetchall()
+            existing = {
+                (row["sale_sheet"], row["sale_row_no"]): row
+                for row in db.execute(
+                    "SELECT * FROM allocations WHERE sale_import_id=?", (comparison_import_id,)
+                ).fetchall()
+            }
+            other_consumed = {
+                row["ledger_record_id"]
+                for row in db.execute(
+                    "SELECT ledger_record_id FROM allocations WHERE ledger_record_id IS NOT NULL "
+                    "AND status IN ('matched','manual') AND sale_import_id != ?",
+                    (comparison_import_id,),
+                ).fetchall()
+            }
+
+        sheet_headers = {s["name"]: s["headers"] for s in metadata["sheets"]}
+        ledger_by_id: dict[int, dict[str, Any]] = {}
+        for row in ledger_rows:
+            data = json.loads(row["data_json"])
+            ledger_by_id[row["id"]] = {
+                "id": row["id"],
+                "name": (data.get("名前") or "").strip(),
+                "product": (data.get("商品名") or "").strip(),
+                "qty": _to_number(data.get("個数")),
+                "date": _to_date(data.get("日時")),
+                "amount": _to_number(data.get("金額")),
+            }
+
+        consumed = set(other_consumed)
+        for row in existing.values():
+            if row["status"] == "manual" and row["ledger_record_id"] is not None:
+                consumed.add(row["ledger_record_id"])
+
+        results: list[dict[str, Any]] = []
+        upserts: list[tuple[Any, ...]] = []
+        now = datetime.now().isoformat(timespec="seconds")
+
+        for record in records:
+            headers = sheet_headers.get(record["sheet_name"], [])
+            split = next((i for i, h in enumerate(headers) if i > 0 and h == "年月日"), None)
+            if split is None:
+                continue
+            values = json.loads(record["data_json"])["values"]
+            purchase, sale = values[:split], values[split:]
+            if sale[0] in (None, ""):
+                continue
+            purchase_headers = headers[:split]
+
+            prior = existing.get((record["sheet_name"], record["row_no"]))
+            if prior and prior["status"] == "manual":
+                results.append({
+                    "row_no": record["row_no"], "sheet": record["sheet_name"], "status": "manual",
+                    "ledger_record_id": prior["ledger_record_id"],
+                    "ledger": ledger_by_id.get(prior["ledger_record_id"]),
+                    "product": None, "note": "手動で割当済み", "candidates": [],
+                })
+                continue
+
+            product_idx = _index_of(purchase_headers, "品目")
+            qty_idx = _index_of(purchase_headers, "数量")
+            name_idx = _index_of(purchase_headers, "相手方名")
+            amount_idx = _index_of(purchase_headers, "代価", contains=True)
+            product = str(purchase[product_idx]).strip() if product_idx is not None and purchase[product_idx] not in (None, "") else None
+            qty = _to_number(purchase[qty_idx]) if qty_idx is not None else None
+            purchase_date = _to_date(purchase[0])
+            counterparty = str(purchase[name_idx]).strip() if name_idx is not None and purchase[name_idx] not in (None, "") else None
+            amount = _to_number(purchase[amount_idx]) if amount_idx is not None else None
+
+            candidates = [c for c in ledger_by_id.values() if c["id"] not in consumed and product and c["product"] == product]
+            strict = [c for c in candidates if c["qty"] == qty and c["date"] == purchase_date]
+            pool = strict or candidates
+            if counterparty:
+                named = [c for c in pool if c["name"] == counterparty]
+                if named:
+                    pool = named
+
+            status: str; ledger_id: int | None = None; note: str | None; candidate_ids: list[int] = []
+            if not product:
+                status, note = "not_found", "品目が空欄です"
+            elif len(pool) == 1:
+                status, ledger_id = "matched", pool[0]["id"]
+                consumed.add(ledger_id)
+                mismatches = []
+                if qty is not None and pool[0]["qty"] != qty:
+                    mismatches.append("数量")
+                if purchase_date is not None and pool[0]["date"] != purchase_date:
+                    mismatches.append("日付")
+                if amount is not None and pool[0]["amount"] is not None and abs(pool[0]["amount"] - amount) > 0.5:
+                    mismatches.append("金額")
+                note = ("・".join(mismatches) + "が一致しません") if mismatches else None
+            elif len(pool) > 1:
+                status, note, candidate_ids = "ambiguous", f"候補{len(pool)}件から選択してください", [c["id"] for c in pool]
+            else:
+                status, note, candidate_ids = "not_found", "一致する古物台帳の記録がありません", [c["id"] for c in candidates]
+
+            upserts.append((comparison_import_id, record["sheet_name"], record["row_no"], ledger_id, status,
+                            json_text(candidate_ids), note, now))
+            results.append({
+                "row_no": record["row_no"], "sheet": record["sheet_name"], "status": status,
+                "ledger_record_id": ledger_id, "ledger": ledger_by_id.get(ledger_id), "product": product,
+                "note": note, "candidates": [ledger_by_id[cid] for cid in candidate_ids],
+            })
+
+        with closing(self.connect()) as db, db:
+            db.executemany(
+                """INSERT INTO allocations(sale_import_id, sale_sheet, sale_row_no, ledger_record_id, status, candidates_json, note, created_at)
+                   VALUES(?,?,?,?,?,?,?,?)
+                   ON CONFLICT(sale_import_id, sale_sheet, sale_row_no) DO UPDATE SET
+                     ledger_record_id=excluded.ledger_record_id, status=excluded.status,
+                     candidates_json=excluded.candidates_json, note=excluded.note, created_at=excluded.created_at
+                """,
+                upserts,
+            )
+        return results
+
+    def search_ledger(self, query: str, limit: int = 30) -> list[dict[str, Any]]:
+        query = query.strip()
+        if not query:
+            return []
+        with closing(self.connect()) as db, db:
+            rows = db.execute(
+                "SELECT r.id, r.data_json FROM records r JOIN imports i ON r.import_id=i.id WHERE i.kind='ledger' ORDER BY r.id"
+            ).fetchall()
+            consumed = {
+                row["ledger_record_id"]
+                for row in db.execute(
+                    "SELECT ledger_record_id FROM allocations WHERE ledger_record_id IS NOT NULL AND status IN ('matched','manual')"
+                ).fetchall()
+            }
+        result = []
+        for row in rows:
+            if row["id"] in consumed:
+                continue
+            data = json.loads(row["data_json"])
+            haystack = f"{data.get('商品名', '')} {data.get('名前', '')}"
+            if query not in haystack:
+                continue
+            result.append({"id": row["id"], "name": data.get("名前"), "product": data.get("商品名"),
+                           "qty": data.get("個数"), "date": data.get("日時"), "amount": data.get("金額")})
+            if len(result) >= limit:
+                break
+        return result
+
+    def set_manual_allocation(self, comparison_import_id: int, sheet: str, row_no: int,
+                              ledger_record_id: int | None) -> None:
+        now = datetime.now().isoformat(timespec="seconds")
+        with closing(self.connect()) as db, db:
+            db.execute(
+                """INSERT INTO allocations(sale_import_id, sale_sheet, sale_row_no, ledger_record_id, status, candidates_json, note, created_at)
+                   VALUES(?,?,?,?,?,?,?,?)
+                   ON CONFLICT(sale_import_id, sale_sheet, sale_row_no) DO UPDATE SET
+                     ledger_record_id=excluded.ledger_record_id, status='manual', candidates_json='[]',
+                     note=NULL, created_at=excluded.created_at
+                """,
+                (comparison_import_id, sheet, row_no, ledger_record_id, "manual", "[]", None, now),
+            )
 
     def export(self, import_id: int, output: str | Path, template_id: int | None = None,
                preview: bool = False) -> Path:

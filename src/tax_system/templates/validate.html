@@ -4,6 +4,10 @@
 <h1>チェック結果</h1>
 <p class="lead">取込ID {{ imp.id }}（{{ "古物台帳" if imp.kind == "ledger" else "相対表" }} / {{ imp.source_name }}）</p>
 
+{% if imp.kind == "comparison" %}
+<p><a href="{{ url_for('allocations_view', import_id=imp.id) }}">仕入との対応を確認・修正する →</a></p>
+{% endif %}
+
 {% if checks %}
   <section class="card">
     <h2 class="error-title">エラー・注意 {{ checks|length }} 件</h2>

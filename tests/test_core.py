@@ -3,6 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from openpyxl import Workbook
+
 from tax_system.core import LEDGER_COLUMNS, TaxSystem
 
 
@@ -35,6 +37,80 @@ class LedgerTests(unittest.TestCase):
         import_id = self.app.import_ledger(path)
         with self.assertRaises(ValueError): self.app.export(import_id, self.root / "blocked.csv")
         self.app.export(import_id, self.root / "preview.csv", preview=True)
+
+
+class AllocationTests(unittest.TestCase):
+    PURCHASE_HEADERS = ["年月日", "品目", "数量", "相手方名", "代価"]
+    SALE_HEADERS = ["年月日", "数量"]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.app = TaxSystem(self.root / "runtime")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_ledger(self, row):
+        path = self.root / "ledger.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n")
+            writer.writeheader(); writer.writerow(row)
+        return path
+
+    def write_comparison(self, purchase_row, sale_row, name="comparison.xlsx"):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "輸出販売"
+        headers = self.PURCHASE_HEADERS + self.SALE_HEADERS
+        for col, value in enumerate(headers, 1):
+            ws.cell(2, col).value = value
+        for col, value in enumerate(purchase_row + sale_row, 1):
+            ws.cell(3, col).value = value
+        path = self.root / name
+        wb.save(path)
+        return path
+
+    def test_matching_purchase_is_found_automatically(self):
+        ledger_row = dict(zip(LEDGER_COLUMNS, [
+            "2026-05-01", "山田太郎", "やまだたろう", "1990-01-01", "匿名住所", "000",
+            "テストカード", "2", "10000", "20000", "",
+        ]))
+        self.app.import_ledger(self.write_ledger(ledger_row))
+        comparison_id = self.app.import_comparison(
+            self.write_comparison(["2026-05-01", "テストカード", 2, "山田太郎", 20000], ["2026-06-01", 2])
+        )
+        self.assertEqual([], self.app.validate(comparison_id))
+
+    def test_missing_purchase_blocks_export(self):
+        ledger_row = dict(zip(LEDGER_COLUMNS, [
+            "2026-05-01", "山田太郎", "やまだたろう", "1990-01-01", "匿名住所", "000",
+            "テストカード", "2", "10000", "20000", "",
+        ]))
+        self.app.import_ledger(self.write_ledger(ledger_row))
+        comparison_id = self.app.import_comparison(
+            self.write_comparison(["2026-05-01", "別の商品", 2, "山田太郎", 20000], ["2026-06-01", 2])
+        )
+        checks = self.app.validate(comparison_id)
+        self.assertTrue(any(c.code == "ALLOCATION_NOT_FOUND" for c in checks))
+        with self.assertRaises(ValueError):
+            self.app.export(comparison_id, self.root / "blocked.xlsx", template_id=None)
+
+    def test_ledger_record_is_not_reused_for_two_sales(self):
+        ledger_row = dict(zip(LEDGER_COLUMNS, [
+            "2026-05-01", "山田太郎", "やまだたろう", "1990-01-01", "匿名住所", "000",
+            "テストカード", "2", "10000", "20000", "",
+        ]))
+        self.app.import_ledger(self.write_ledger(ledger_row))
+        first_id = self.app.import_comparison(
+            self.write_comparison(["2026-05-01", "テストカード", 2, "山田太郎", 20000], ["2026-06-01", 2], name="first.xlsx")
+        )
+        second_id = self.app.import_comparison(
+            self.write_comparison(["2026-05-01", "テストカード", 2, "山田太郎", 20000], ["2026-06-02", 2], name="second.xlsx")
+        )
+        self.assertEqual([], self.app.validate(first_id))
+        checks = self.app.validate(second_id)
+        self.assertTrue(any(c.code == "ALLOCATION_NOT_FOUND" for c in checks))
 
 
 if __name__ == "__main__": unittest.main()
