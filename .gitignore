@@ -32,6 +32,8 @@ service-account*.json
 *.tmp
 *.bak
 
+*.egg-info/
+
 # OS/editor files
 .DS_Store
 Thumbs.db

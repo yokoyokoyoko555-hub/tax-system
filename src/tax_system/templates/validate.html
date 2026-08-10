@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}チェック結果{% endblock %}
+{% block content %}
+<h1>チェック結果</h1>
+<p class="lead">取込ID {{ imp.id }}（{{ "古物台帳" if imp.kind == "ledger" else "相対表" }} / {{ imp.source_name }}）</p>
+
+{% if checks %}
+  <section class="card">
+    <h2 class="error-title">エラー・注意 {{ checks|length }} 件</h2>
+    <table>
+      <thead><tr><th>行</th><th>シート</th><th>内容</th></tr></thead>
+      <tbody>
+        {% for c in checks %}
+        <tr class="level-{{ c.level }}">
+          <td>{{ c.row_no if c.row_no is not none else "-" }}</td>
+          <td>{{ c.sheet or "-" }}</td>
+          <td>{{ c.message }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="muted">エラーが1件でもある場合、正式出力はできません。内容を確認のうえ、元データを修正して取込し直してください。確認用出力は可能です。</p>
+  </section>
+{% else %}
+  <section class="card success-box">
+    <h2>エラーはありません</h2>
+    <p>正式出力が行えます。</p>
+  </section>
+{% endif %}
+
+<section class="card">
+  <h2>出力</h2>
+  <form method="post" action="{{ url_for('export_import', import_id=imp.id) }}">
+    {% if imp.kind == "comparison" %}
+    <label>使用するテンプレート
+      <select name="template_id" required>
+        {% for t in templates %}
+        <option value="{{ t.id }}">{{ t.name }} / {{ t.version }}（適用開始 {{ t.effective_from }}）</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% if not templates %}
+    <p class="flash flash-error">この種類のテンプレートが未登録です。先に<a href="{{ url_for('new_template') }}">テンプレート登録</a>してください。</p>
+    {% endif %}
+    {% endif %}
+
+    <label class="checkbox">
+      <input type="checkbox" name="preview" {% if has_errors %}checked disabled{% endif %}>
+      確認用として出力する（正式帳票ではない透かし入り）
+    </label>
+    {% if has_errors %}<input type="hidden" name="preview" value="on">{% endif %}
+
+    <button type="submit" class="button" {% if imp.kind == "comparison" and not templates %}disabled{% endif %}>
+      出力する
+    </button>
+    {% if has_errors %}<p class="muted">エラーがあるため、正式出力は選べません（確認用のみ）。</p>{% endif %}
+  </form>
+</section>
+{% endblock %}

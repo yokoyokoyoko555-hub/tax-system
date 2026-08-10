@@ -173,6 +173,32 @@ class TaxSystem:
             db.executemany("INSERT INTO records(import_id,sheet_name,row_no,data_json) VALUES(?,?,?,?)", payload)
         return import_id
 
+    def list_templates(self) -> list[dict[str, Any]]:
+        with closing(self.connect()) as db, db:
+            rows = db.execute(
+                "SELECT id, report_type, name, version, effective_from, format, created_at FROM template_versions ORDER BY report_type, name, effective_from DESC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_imports(self) -> list[dict[str, Any]]:
+        with closing(self.connect()) as db, db:
+            rows = db.execute(
+                "SELECT id, kind, source_name, imported_at FROM imports ORDER BY id DESC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_import(self, import_id: int) -> dict[str, Any] | None:
+        with closing(self.connect()) as db, db:
+            row = db.execute("SELECT id, kind, source_name, imported_at FROM imports WHERE id=?", (import_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_exports(self) -> list[dict[str, Any]]:
+        with closing(self.connect()) as db, db:
+            rows = db.execute(
+                "SELECT id, import_id, template_id, mode, output_name, created_at FROM exports ORDER BY id DESC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def validate(self, import_id: int) -> list[CheckResult]:
         with closing(self.connect()) as db, db:
             imp = db.execute("SELECT * FROM imports WHERE id=?", (import_id,)).fetchone()

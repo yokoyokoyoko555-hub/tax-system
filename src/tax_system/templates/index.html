@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}ホーム{% endblock %}
+{% block content %}
+<h1>ホーム</h1>
+
+<section class="card">
+  <h2>次にやること</h2>
+  <p class="lead">
+    ① まだ登録していなければ<a href="{{ url_for('new_template') }}">相対表テンプレートを登録</a>してください（古物台帳は不要）。<br>
+    ② <a href="{{ url_for('new_import') }}">データを取込</a>すると、自動でチェック結果画面に進みます。
+  </p>
+</section>
+
+<section class="card">
+  <h2>取込済みデータ</h2>
+  {% if imports %}
+  <table>
+    <thead><tr><th>ID</th><th>種類</th><th>ファイル名</th><th>取込日時</th><th></th></tr></thead>
+    <tbody>
+      {% for imp in imports %}
+      <tr>
+        <td>{{ imp.id }}</td>
+        <td>{{ "古物台帳" if imp.kind == "ledger" else "相対表" }}</td>
+        <td>{{ imp.source_name }}</td>
+        <td>{{ imp.imported_at }}</td>
+        <td><a class="button small" href="{{ url_for('validate_import', import_id=imp.id) }}">チェック・出力</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">まだデータが取り込まれていません。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>登録済みテンプレート</h2>
+  {% if templates %}
+  <table>
+    <thead><tr><th>ID</th><th>種類</th><th>名前</th><th>版</th><th>適用開始日</th></tr></thead>
+    <tbody>
+      {% for t in templates %}
+      <tr>
+        <td>{{ t.id }}</td>
+        <td>{{ "古物台帳" if t.report_type == "ledger" else "相対表" }}</td>
+        <td>{{ t.name }}</td>
+        <td>{{ t.version }}</td>
+        <td>{{ t.effective_from }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">まだテンプレートが登録されていません。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>出力履歴</h2>
+  {% if exports %}
+  <table>
+    <thead><tr><th>ID</th><th>取込ID</th><th>種別</th><th>ファイル名</th><th>出力日時</th></tr></thead>
+    <tbody>
+      {% for e in exports %}
+      <tr>
+        <td>{{ e.id }}</td>
+        <td>{{ e.import_id }}</td>
+        <td>{{ "確認用" if e.mode == "preview" else "正式" }}</td>
+        <td><a href="{{ url_for('download', filename=e.output_name) }}">{{ e.output_name }}</a></td>
+        <td>{{ e.created_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">まだ出力履歴がありません。</p>
+  {% endif %}
+</section>
+{% endblock %}

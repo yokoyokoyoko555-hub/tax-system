@@ -7,11 +7,15 @@ name = "tax-system"
 version = "0.1.0"
 description = "古物台帳・輸出免税販売相対表のローカル帳票管理"
 requires-python = ">=3.11"
-dependencies = ["openpyxl>=3.1,<4"]
+dependencies = ["openpyxl>=3.1,<4", "flask>=3.0,<4"]
 
 [project.scripts]
 tax-system = "tax_system.cli:main"
+tax-system-web = "tax_system.web:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+tax_system = ["templates/*.html", "static/*.css"]
 

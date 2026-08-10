@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}テンプレート登録{% endblock %}
+{% block content %}
+<h1>相対表テンプレートの登録</h1>
+<p class="lead">既存の相対表Excelファイルをそのまま登録します。商品区分（OPTCG・SportCardなど）や改版のたびに、名前や版を変えて登録してください。</p>
+
+<form class="card" method="post" enctype="multipart/form-data">
+  <label>種類
+    <select name="report_type" required>
+      <option value="comparison">相対表（輸出・免税販売）</option>
+      <option value="ledger">古物台帳</option>
+    </select>
+  </label>
+
+  <label>テンプレートファイル（.xlsx または .csv）
+    <input type="file" name="file" accept=".xlsx,.csv" required>
+  </label>
+
+  <label>名前（商品区分など）
+    <input type="text" name="name" placeholder="例: optcg" required>
+  </label>
+
+  <label>版
+    <input type="text" name="version" placeholder="例: 2025-2026" required>
+  </label>
+
+  <label>適用開始日
+    <input type="date" name="effective_from" required>
+  </label>
+
+  <button type="submit" class="button">登録する</button>
+</form>
+{% endblock %}
