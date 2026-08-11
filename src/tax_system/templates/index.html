@@ -31,6 +31,9 @@
           {% if imp.kind == "ledger" %}
           <a class="button small" href="{{ url_for('ledger_completion_view', import_id=imp.id) }}">内訳復元</a>
           {% endif %}
+          {% if imp.kind == "export_data" %}
+          <a class="button small" href="{{ url_for('build_comparison_view', import_id=imp.id) }}">相対表を組み立てる</a>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}

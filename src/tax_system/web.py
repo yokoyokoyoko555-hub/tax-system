@@ -9,10 +9,10 @@ from pathlib import Path
 from flask import Flask, abort, flash, redirect, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 
-from .core import INVENTORY_COLUMNS, LEDGER_COLUMNS, TaxSystem
+from .core import EXPORT_DATA_COLUMNS, INVENTORY_COLUMNS, LEDGER_COLUMNS, TaxSystem
 
-KIND_LABELS = {"ledger": "古物台帳", "comparison": "相対表", "inventory": "期末在庫表"}
-FLAT_COLUMNS = {"ledger": LEDGER_COLUMNS, "inventory": INVENTORY_COLUMNS}
+KIND_LABELS = {"ledger": "古物台帳", "comparison": "相対表", "inventory": "期末在庫表", "export_data": "輸出データ"}
+FLAT_COLUMNS = {"ledger": LEDGER_COLUMNS, "inventory": INVENTORY_COLUMNS, "export_data": EXPORT_DATA_COLUMNS}
 
 OUTPUT_DIR = Path("outputs").resolve()
 
@@ -77,6 +77,8 @@ def create_app(home: str | Path | None = None) -> Flask:
                         import_id = ts.import_ledger(path)
                     elif report_type == "inventory":
                         import_id = ts.import_inventory(path)
+                    elif report_type == "export_data":
+                        import_id = ts.import_export_data(path)
                     else:
                         import_id = ts.import_comparison(path)
                 except ValueError as exc:
@@ -166,6 +168,28 @@ def create_app(home: str | Path | None = None) -> Flask:
             flash(f"出力に失敗しました: {exc}", "error")
             return redirect(url_for("ledger_completion_view", import_id=import_id))
         return redirect(url_for("download", filename=output.name))
+
+    @app.route("/build-comparison/<int:import_id>", methods=["GET", "POST"])
+    def build_comparison_view(import_id: int):
+        ts = system()
+        imp = ts.get_import(import_id)
+        if not imp or imp["kind"] != "export_data":
+            abort(404)
+        templates = [t for t in ts.list_templates() if t["report_type"] == "comparison"]
+        if request.method == "POST":
+            template_id = request.form.get("template_id")
+            if not template_id:
+                flash("テンプレートを選択してください", "error")
+                return redirect(url_for("build_comparison_view", import_id=import_id))
+            try:
+                result = ts.build_comparison(import_id, int(template_id))
+            except ValueError as exc:
+                flash(f"組み立てに失敗しました: {exc}", "error")
+                return redirect(url_for("build_comparison_view", import_id=import_id))
+            flash(f"相対表を組み立てました（全{result['total']}件中、対応する仕入が見つからなかった行: {result['unmatched']}件）",
+                  "success" if result["unmatched"] == 0 else "error")
+            return redirect(url_for("validate_import", import_id=result["import_id"]))
+        return render_template("build_comparison.html", imp=imp, templates=templates)
 
     @app.route("/allocations/<int:import_id>")
     def allocations_view(import_id: int):

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from tax_system.core import INVENTORY_COLUMNS, LEDGER_COLUMNS, TaxSystem
+from tax_system.core import EXPORT_DATA_COLUMNS, INVENTORY_COLUMNS, LEDGER_COLUMNS, TaxSystem
 
 
 class LedgerTests(unittest.TestCase):
@@ -191,6 +191,83 @@ class LedgerCompletionTests(unittest.TestCase):
         ]))
         with self.assertRaises(ValueError):
             self.app.export_completed_ledger(ledger_id, self.root / "blocked.csv")
+
+
+class BuildComparisonTests(unittest.TestCase):
+    HEADERS = ["年月日", "品目", "数量", "相手方名", "代価", "年月日", "数量"]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.app = TaxSystem(self.root / "runtime")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_ledger(self, rows):
+        path = self.root / "ledger.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(dict(zip(LEDGER_COLUMNS, row)))
+        return path
+
+    def write_export_data(self, rows):
+        path = self.root / "export_data.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=EXPORT_DATA_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(dict(zip(EXPORT_DATA_COLUMNS, row)))
+        return path
+
+    def register_template(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "輸出販売"
+        for col, value in enumerate(self.HEADERS, 1):
+            ws.cell(2, col).value = value
+        path = self.root / "template.xlsx"
+        wb.save(path)
+        return self.app.register_template("comparison", path, "test", "v1", "2026-01-01")
+
+    def test_fifo_matches_oldest_purchase_first(self):
+        self.app.import_ledger(self.write_ledger([
+            ["2026-01-01", "Aさん", "えー", "1990-01-01", "匿名住所", "000", "カードX", "1", "1000", "1000", ""],
+            ["2026-02-01", "Bさん", "びー", "1991-01-01", "匿名住所", "000", "カードX", "1", "1200", "1200", ""],
+        ]))
+        export_id = self.app.import_export_data(self.write_export_data([
+            ["2026-03-01", "カードX", "2000", "1", "2000", "海外顧客1", "銀行振込", "JPY"],
+            ["2026-03-02", "カードX", "2200", "1", "2200", "海外顧客2", "銀行振込", "JPY"],
+        ]))
+        template_id = self.register_template()
+
+        result = self.app.build_comparison(export_id, template_id)
+        self.assertEqual(2, result["total"])
+        self.assertEqual(0, result["unmatched"])
+
+        self.assertEqual([], self.app.validate(result["import_id"]))
+
+        allocations = self.app.allocate(result["import_id"])
+        by_row = {a["row_no"]: a for a in allocations}
+        self.assertEqual("Aさん", by_row[2]["ledger"]["name"])
+        self.assertEqual("Bさん", by_row[3]["ledger"]["name"])
+
+    def test_unmatched_row_flagged_for_manual_allocation(self):
+        self.app.import_ledger(self.write_ledger([
+            ["2026-01-01", "Aさん", "えー", "1990-01-01", "匿名住所", "000", "カードY", "1", "1000", "1000", ""],
+        ]))
+        export_id = self.app.import_export_data(self.write_export_data([
+            ["2026-03-01", "カードZ", "2000", "1", "2000", "海外顧客1", "銀行振込", "JPY"],
+        ]))
+        template_id = self.register_template()
+
+        result = self.app.build_comparison(export_id, template_id)
+        self.assertEqual(1, result["unmatched"])
+
+        checks = self.app.validate(result["import_id"])
+        self.assertTrue(any(c.code == "ALLOCATION_NOT_FOUND" for c in checks))
 
 
 if __name__ == "__main__": unittest.main()

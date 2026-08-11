@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}相対表の組み立て{% endblock %}
+{% block content %}
+<h1>相対表の組み立て</h1>
+<p class="lead">
+  取込ID {{ imp.id }}（輸出データ / {{ imp.source_name }}）を、古物台帳の記録と品名・数量・日付で自動的に対応付け、
+  選んだテンプレートの構造で「輸出販売」シートを組み立てます。<br>
+  対応する仕入は、同じ品名・数量の古物台帳の記録のうち、最も古い未使用のものから順に割り当てます（先入先出）。<br>
+  対応が見つからない行は品名だけ入った状態で作成され、あとで「仕入との対応」画面から手動で選べます。
+</p>
+
+{% if not templates %}
+<p class="flash flash-error">相対表のテンプレートが未登録です。先に<a href="{{ url_for('new_template') }}">テンプレート登録</a>してください。</p>
+{% else %}
+<form class="card" method="post">
+  <label>組み立て先のテンプレート
+    <select name="template_id" required>
+      {% for t in templates %}
+      <option value="{{ t.id }}">{{ t.name }} / {{ t.version }}（適用開始 {{ t.effective_from }}）</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="submit" class="button">組み立てる</button>
+</form>
+{% endif %}
+
+<p class="muted"><a href="{{ url_for('validate_import', import_id=imp.id) }}">チェック結果に戻る</a></p>
+{% endblock %}

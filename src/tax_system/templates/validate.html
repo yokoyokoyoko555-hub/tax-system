@@ -12,6 +12,9 @@
   {% if imp.kind == "ledger" %}
   ｜ <a href="{{ url_for('ledger_completion_view', import_id=imp.id) }}">内訳を復元する →</a>
   {% endif %}
+  {% if imp.kind == "export_data" %}
+  ｜ <a href="{{ url_for('build_comparison_view', import_id=imp.id) }}">相対表を組み立てる →</a>
+  {% endif %}
 </p>
 
 {% if checks %}
@@ -38,7 +41,7 @@
   </section>
 {% endif %}
 
-{% if imp.kind != "inventory" %}
+{% if imp.kind in ("ledger", "comparison") %}
 <section class="card">
   <h2>出力</h2>
   <form method="post" action="{{ url_for('export_import', import_id=imp.id) }}">

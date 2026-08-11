@@ -19,6 +19,7 @@ from openpyxl import load_workbook
 
 LEDGER_COLUMNS = ["日時", "名前", "ふりがな", "生年月日", "住所", "電話番号", "商品名", "個数", "単価", "金額", "備考"]
 INVENTORY_COLUMNS = ["商品名", "仕入れ原価", "在庫数"]
+EXPORT_DATA_COLUMNS = ["年月日", "品名", "金額", "数量", "小計", "相手方名", "支払方法", "通貨"]
 
 
 def sha256(path: Path) -> str:
@@ -184,7 +185,7 @@ class TaxSystem:
         if reader.fieldnames != LEDGER_COLUMNS:
             raise ValueError(f"古物台帳の列が既存仕様と一致しません: {reader.fieldnames}")
         rows = list(reader)
-        return self._save_import("ledger", source, rows, {"encoding": encoding, "columns": reader.fieldnames})
+        return self._save_import("ledger", source.name, sha256(source), rows, {"encoding": encoding, "columns": reader.fieldnames})
 
     def import_comparison(self, source: str | Path) -> int:
         self.initialize()
@@ -206,7 +207,7 @@ class TaxSystem:
                 if values[0] in (None, "") and values[split] in (None, ""):
                     continue
                 records.append({"sheet": ws.title, "row_no": row_no, "values": values})
-        return self._save_import("comparison", source, records, {"sheets": sheets})
+        return self._save_import("comparison", source.name, sha256(source), records, {"sheets": sheets})
 
     def import_inventory(self, source: str | Path) -> int:
         self.initialize()
@@ -220,14 +221,29 @@ class TaxSystem:
         if reader.fieldnames != INVENTORY_COLUMNS:
             raise ValueError(f"期末在庫表の列が想定と一致しません（{INVENTORY_COLUMNS}）: {reader.fieldnames}")
         rows = list(reader)
-        return self._save_import("inventory", source, rows, {"encoding": encoding, "columns": reader.fieldnames})
+        return self._save_import("inventory", source.name, sha256(source), rows, {"encoding": encoding, "columns": reader.fieldnames})
 
-    def _save_import(self, kind: str, source: Path, rows: Iterable[dict[str, Any]], metadata: dict[str, Any]) -> int:
+    def import_export_data(self, source: str | Path) -> int:
+        self.initialize()
+        source = Path(source).resolve(strict=True)
+        raw = source.read_bytes()
+        try:
+            text, encoding = raw.decode("utf-8-sig"), "utf-8-sig"
+        except UnicodeDecodeError:
+            text, encoding = raw.decode("cp932"), "cp932"
+        reader = csv.DictReader(text.splitlines())
+        if reader.fieldnames != EXPORT_DATA_COLUMNS:
+            raise ValueError(f"輸出データの列が想定と一致しません（{EXPORT_DATA_COLUMNS}）: {reader.fieldnames}")
+        rows = list(reader)
+        return self._save_import("export_data", source.name, sha256(source), rows, {"encoding": encoding, "columns": reader.fieldnames})
+
+    def _save_import(self, kind: str, source_name: str, source_hash: str,
+                     rows: Iterable[dict[str, Any]], metadata: dict[str, Any]) -> int:
         now = datetime.now().isoformat(timespec="seconds")
         rows = list(rows)
         with closing(self.connect()) as db, db:
             cur = db.execute("INSERT INTO imports(kind,source_name,source_sha256,imported_at,metadata_json) VALUES(?,?,?,?,?)",
-                             (kind, source.name, sha256(source), now, json_text(metadata)))
+                             (kind, source_name, source_hash, now, json_text(metadata)))
             import_id = int(cur.lastrowid)
             payload = []
             for index, row in enumerate(rows, 2):
@@ -299,9 +315,24 @@ class TaxSystem:
             return self._validate_ledger(records)
         if imp["kind"] == "inventory":
             return self._validate_inventory(records)
+        if imp["kind"] == "export_data":
+            return self._validate_export_data(records)
         checks = self._validate_comparison(records, json.loads(imp["metadata_json"]))
         checks.extend(self._validate_allocations(import_id))
         return checks
+
+    def _validate_export_data(self, records: Iterable[sqlite3.Row]) -> list[CheckResult]:
+        results: list[CheckResult] = []
+        for record in records:
+            data = json.loads(record["data_json"])
+            row_no = record["row_no"]
+            for key in ("年月日", "品名", "数量", "小計"):
+                if data.get(key) in (None, ""):
+                    results.append(CheckResult("REQUIRED", "error", f"必須項目「{key}」が空欄です", row_no=row_no))
+            for key in ("金額", "数量", "小計"):
+                if data.get(key) not in (None, "") and _to_number(data.get(key)) is None:
+                    results.append(CheckResult("NUMBER_FORMAT", "error", f"{key}を数値として解釈できません", row_no=row_no))
+        return results
 
     def _validate_inventory(self, records: Iterable[sqlite3.Row]) -> list[CheckResult]:
         results: list[CheckResult] = []
@@ -720,6 +751,133 @@ class TaxSystem:
                     row["備考"] = f"{data.get('備考') or ''} {note}".strip()
                     writer.writerow(row)
         return output
+
+    def build_comparison(self, export_data_import_id: int, template_id: int) -> dict[str, Any]:
+        """輸出データ（払出し側のみ）と古物台帳から、指定テンプレートの構造に沿った
+        相対表（輸出販売シート）を組み立てる。対応する仕入は品名・数量が一致し、
+        輸出データの年月日以前の古物台帳記録から、先入先出（最も古い未使用のもの）で
+        自動的に対応付ける。対応が見つからない行は品目だけ埋めて残りは空欄にし、
+        既存のチェック・仕入対応の確認画面でエラーとして検出・手動対応できるようにする。
+        """
+        with closing(self.connect()) as db, db:
+            exp_imp = db.execute("SELECT * FROM imports WHERE id=?", (export_data_import_id,)).fetchone()
+            if not exp_imp or exp_imp["kind"] != "export_data":
+                raise ValueError("輸出データの取込IDを指定してください")
+            template = db.execute("SELECT * FROM template_versions WHERE id=?", (template_id,)).fetchone()
+            if not template or template["report_type"] != "comparison":
+                raise ValueError("相対表のテンプレートを指定してください")
+            export_records = db.execute(
+                "SELECT * FROM records WHERE import_id=? ORDER BY row_no", (export_data_import_id,)
+            ).fetchall()
+            ledger_rows = db.execute(
+                "SELECT r.id, r.data_json FROM records r JOIN imports i ON r.import_id = i.id WHERE i.kind='ledger'"
+            ).fetchall()
+            other_consumed = {
+                row["ledger_record_id"]
+                for row in db.execute(
+                    "SELECT ledger_record_id FROM allocations WHERE ledger_record_id IS NOT NULL AND status IN ('matched','manual')"
+                ).fetchall()
+            }
+
+        settings = json.loads(template["settings_json"])
+        sheet_meta = next((s for s in settings.get("sheets", []) if s["name"] == "輸出販売"), None)
+        if sheet_meta is None:
+            raise ValueError("このテンプレートに「輸出販売」シートが見つかりません")
+        headers = sheet_meta["headers"]
+        split = next((i for i, h in enumerate(headers) if i > 0 and h == "年月日"), None)
+        if split is None:
+            raise ValueError("テンプレートの受入れ・払出しの境界を判定できません")
+        purchase_headers, sale_headers = headers[:split], headers[split:]
+
+        p_product = _index_of(purchase_headers, "品目")
+        p_qty = _index_of(purchase_headers, "数量")
+        p_amount = _index_of(purchase_headers, "代価", contains=True)
+        p_unit = _index_of(purchase_headers, "単価", contains=True)
+        p_name = _index_of(purchase_headers, "相手方名")
+
+        s_qty = _index_of(sale_headers, "数量")
+        s_amount = _index_of(sale_headers, "代価", contains=True)
+        s_unit = _index_of(sale_headers, "単価", contains=True)
+        s_name = _index_of(sale_headers, "相手方名")
+        s_payment = _index_of(sale_headers, "支払方法")
+        s_currency = _index_of(sale_headers, "通貨")
+
+        ledger_pool = []
+        for row in ledger_rows:
+            if row["id"] in other_consumed:
+                continue
+            data = json.loads(row["data_json"])
+            ledger_pool.append({
+                "id": row["id"], "name": (data.get("名前") or "").strip(),
+                "product": (data.get("商品名") or "").strip(),
+                "qty": _to_number(data.get("個数")), "date": _to_date(data.get("日時")),
+                "unit": _to_number(data.get("単価")), "amount": _to_number(data.get("金額")),
+            })
+
+        consumed: set[int] = set()
+        rows_out: list[dict[str, Any]] = []
+        allocation_rows: list[tuple[Any, ...]] = []
+        unmatched = 0
+        now = datetime.now().isoformat(timespec="seconds")
+
+        for record in export_records:
+            data = json.loads(record["data_json"])
+            product = (data.get("品名") or "").strip()
+            qty = _to_number(data.get("数量"))
+            sale_date = _to_date(data.get("年月日"))
+
+            candidates = [
+                c for c in ledger_pool
+                if c["id"] not in consumed and product and c["product"] == product and c["qty"] == qty
+                and (sale_date is None or c["date"] is None or c["date"] <= sale_date)
+            ]
+            candidates.sort(key=lambda c: c["date"] or date.max)
+            match = candidates[0] if candidates else None
+            if match:
+                consumed.add(match["id"])
+            else:
+                unmatched += 1
+
+            values: list[Any] = [None] * len(headers)
+            if p_product is not None:
+                values[p_product] = product
+            if match:
+                values[0] = match["date"]
+                if p_qty is not None: values[p_qty] = match["qty"]
+                if p_unit is not None: values[p_unit] = match["unit"]
+                if p_amount is not None: values[p_amount] = match["amount"]
+                if p_name is not None: values[p_name] = match["name"]
+            values[split] = sale_date
+            if s_qty is not None: values[split + s_qty] = qty
+            if s_unit is not None: values[split + s_unit] = _to_number(data.get("金額"))
+            if s_amount is not None: values[split + s_amount] = _to_number(data.get("小計"))
+            if s_name is not None: values[split + s_name] = data.get("相手方名")
+            if s_payment is not None: values[split + s_payment] = data.get("支払方法")
+            if s_currency is not None: values[split + s_currency] = data.get("通貨")
+
+            rows_out.append({"sheet": "輸出販売", "row_no": record["row_no"], "values": values})
+            if match:
+                allocation_rows.append(("輸出販売", record["row_no"], match["id"], "matched", "[]", None, now))
+
+        metadata = {
+            "sheets": [{"name": "輸出販売", "headers": headers, "max_column": len(headers)}],
+            "built_from": {"export_data_import_id": export_data_import_id, "template_id": template_id},
+        }
+        import_id = self._save_import(
+            "comparison", f"{exp_imp['source_name']}（組立）", exp_imp["source_sha256"], rows_out, metadata,
+        )
+        if allocation_rows:
+            with closing(self.connect()) as db, db:
+                db.executemany(
+                    """INSERT INTO allocations(sale_import_id, sale_sheet, sale_row_no, ledger_record_id, status, candidates_json, note, created_at)
+                       VALUES(?,?,?,?,?,?,?,?)
+                       ON CONFLICT(sale_import_id, sale_sheet, sale_row_no) DO UPDATE SET
+                         ledger_record_id=excluded.ledger_record_id, status=excluded.status,
+                         candidates_json=excluded.candidates_json, note=excluded.note, created_at=excluded.created_at
+                    """,
+                    [(import_id, *row) for row in allocation_rows],
+                )
+        return {"import_id": import_id, "total": len(rows_out), "unmatched": unmatched}
 
     def export(self, import_id: int, output: str | Path, template_id: int | None = None,
                preview: bool = False) -> Path:

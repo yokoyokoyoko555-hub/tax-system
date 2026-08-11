@@ -2,14 +2,15 @@
 {% block title %}データ取込{% endblock %}
 {% block content %}
 <h1>データの取込</h1>
-<p class="lead">古物台帳CSV・相対表Excel・期末在庫表CSVを取り込みます。取込後は自動でチェック結果画面に進みます。</p>
+<p class="lead">古物台帳CSV・相対表Excel・期末在庫表CSV・輸出データCSVを取り込みます。取込後は自動でチェック結果画面に進みます。</p>
 
 <form class="card" method="post" enctype="multipart/form-data">
   <label>種類
     <select name="report_type" required>
       <option value="ledger">古物台帳（CSV）</option>
-      <option value="comparison">相対表（Excel）</option>
+      <option value="comparison">相対表（Excel・完成済みのもの）</option>
       <option value="inventory">期末在庫表（CSV・商品名/仕入れ原価/在庫数）</option>
+      <option value="export_data">輸出データ（CSV・年月日/品名/金額/数量/小計/相手方名/支払方法/通貨）</option>
     </select>
   </label>
 
