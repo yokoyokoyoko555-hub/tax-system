@@ -20,6 +20,8 @@ from openpyxl import load_workbook
 LEDGER_COLUMNS = ["日時", "名前", "ふりがな", "生年月日", "住所", "電話番号", "商品名", "個数", "単価", "金額", "備考"]
 INVENTORY_COLUMNS = ["商品名", "仕入れ原価", "在庫数"]
 EXPORT_DATA_COLUMNS = ["年月日", "品名", "金額", "数量", "小計", "相手方名", "支払方法", "通貨"]
+LEDGER_POS_COLUMNS = ["履歴ID", "状態", "日時", "ユーザーID", "氏名", "カード番号", "カード名", "数量", "単価", "金額", "カード備考", "全体備考"]
+LEDGER_IDENTITY_COLUMNS = ["日時", "名前", "名前ふりがな", "生年月日", "住所", "電話番号", "金額"]
 
 
 def sha256(path: Path) -> str:
@@ -186,6 +188,73 @@ class TaxSystem:
             raise ValueError(f"古物台帳の列が既存仕様と一致しません: {reader.fieldnames}")
         rows = list(reader)
         return self._save_import("ledger", source.name, sha256(source), rows, {"encoding": encoding, "columns": reader.fieldnames})
+
+    def import_ledger_pos(self, source: str | Path) -> dict[str, Any]:
+        """POSの取引CSV（履歴ID/状態/日時/ユーザーID/氏名/カード番号/カード名/数量/単価/金額/カード備考/全体備考）を
+        古物台帳の標準形式に変換して取り込む。本人確認情報（ふりがな・生年月日・住所・電話番号）は
+        この形式には無いため空欄のまま登録する。「状態」が「承認済み」以外の行は対象外とし、件数を報告する。
+        """
+        self.initialize()
+        source = Path(source).resolve(strict=True)
+        raw = source.read_bytes()
+        try:
+            text, encoding = raw.decode("utf-8-sig"), "utf-8-sig"
+        except UnicodeDecodeError:
+            text, encoding = raw.decode("cp932"), "cp932"
+        reader = csv.DictReader(text.splitlines())
+        if reader.fieldnames != LEDGER_POS_COLUMNS:
+            raise ValueError(f"POS取引データの列が想定と一致しません（{LEDGER_POS_COLUMNS}）: {reader.fieldnames}")
+        rows: list[dict[str, Any]] = []
+        skipped = 0
+        for row in reader:
+            if row.get("状態") != "承認済み":
+                skipped += 1
+                continue
+            note = " ".join(part for part in (row.get("カード備考"), row.get("全体備考")) if part).strip()
+            rows.append({k: "" for k in LEDGER_COLUMNS} | {
+                "日時": row.get("日時", ""), "名前": row.get("氏名", ""),
+                "商品名": row.get("カード名", ""), "個数": row.get("数量", ""),
+                "単価": row.get("単価", ""), "金額": row.get("金額", ""), "備考": note,
+            })
+        import_id = self._save_import(
+            "ledger", source.name, sha256(source), rows,
+            {"encoding": encoding, "source_format": "pos_csv", "skipped_not_approved": skipped},
+        )
+        return {"import_id": import_id, "imported": len(rows), "skipped": skipped}
+
+    def import_ledger_identity(self, source: str | Path) -> dict[str, Any]:
+        """本人確認データExcel（日時/名前/名前ふりがな/生年月日/住所/電話番号/金額）を
+        古物台帳の標準形式に変換して取り込む。商品情報（商品名・個数・単価）と備考は
+        この形式には無いため空欄のまま登録する。
+        """
+        self.initialize()
+        source = Path(source).resolve(strict=True)
+        wb = load_workbook(source, read_only=True, data_only=True)
+        try:
+            ws = wb.worksheets[0]
+            header = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+            while header and header[-1] is None:
+                header.pop()
+            if header != LEDGER_IDENTITY_COLUMNS:
+                raise ValueError(f"本人確認データの列が想定と一致しません（{LEDGER_IDENTITY_COLUMNS}）: {header}")
+            rows: list[dict[str, Any]] = []
+            for values in ws.iter_rows(min_row=2, values_only=True):
+                values = values[: len(LEDGER_IDENTITY_COLUMNS)]
+                if all(v in (None, "") for v in values):
+                    continue
+                data = dict(zip(LEDGER_IDENTITY_COLUMNS, values))
+                rows.append({k: "" for k in LEDGER_COLUMNS} | {
+                    "日時": data.get("日時") or "", "名前": data.get("名前") or "",
+                    "ふりがな": data.get("名前ふりがな") or "", "生年月日": data.get("生年月日") or "",
+                    "住所": data.get("住所") or "", "電話番号": data.get("電話番号") or "",
+                    "金額": data.get("金額") if data.get("金額") is not None else "",
+                })
+        finally:
+            wb.close()
+        import_id = self._save_import(
+            "ledger", source.name, sha256(source), rows, {"source_format": "identity_xlsx"},
+        )
+        return {"import_id": import_id, "imported": len(rows)}
 
     def import_comparison(self, source: str | Path) -> int:
         self.initialize()
@@ -750,6 +819,51 @@ class TaxSystem:
                     note = f"内訳復元（元合計{original_total}円・{'相対表' if item['source'] == 'comparison' else '手動'}）"
                     row["備考"] = f"{data.get('備考') or ''} {note}".strip()
                     writer.writerow(row)
+        return output
+
+    def merge_ledger_exports(self, import_ids: list[int]) -> dict[str, Any]:
+        """複数の古物台帳の取込（形式の異なる取込元でもよい）を1つにまとめる。
+        日時・名前・商品名・個数・金額が完全に一致する行は重複の可能性として報告する
+        （自動では除外しない。実際に重複かどうかは人が確認する）。
+        """
+        if not import_ids:
+            raise ValueError("結合する取込を1件以上選択してください")
+        with closing(self.connect()) as db, db:
+            placeholders = ",".join("?" * len(import_ids))
+            imps = db.execute(f"SELECT * FROM imports WHERE id IN ({placeholders})", import_ids).fetchall()
+            if len(imps) != len(set(import_ids)) or any(i["kind"] != "ledger" for i in imps):
+                raise ValueError("古物台帳の取込のみ選択できます")
+            records = db.execute(
+                f"SELECT * FROM records WHERE import_id IN ({placeholders}) ORDER BY import_id, row_no",
+                import_ids,
+            ).fetchall()
+        rows: list[dict[str, Any]] = []
+        seen: dict[tuple[Any, ...], int] = {}
+        duplicates: list[dict[str, Any]] = []
+        for record in records:
+            data = json.loads(record["data_json"])
+            rows.append(data)
+            key = tuple(data.get(k) for k in ("日時", "名前", "商品名", "個数", "金額"))
+            if key in seen:
+                duplicates.append({"日時": data.get("日時"), "名前": data.get("名前"),
+                                   "商品名": data.get("商品名"), "import_ids": [seen[key], record["import_id"]]})
+            seen[key] = record["import_id"]
+        rows.sort(key=lambda r: r.get("日時") or "")
+        return {"rows": rows, "duplicates": duplicates}
+
+    def export_merged_ledger(self, import_ids: list[int], output: str | Path) -> Path:
+        for import_id in import_ids:
+            checks = self.validate(import_id)
+            if any(c.level == "error" for c in checks):
+                raise ValueError(f"取込ID {import_id} に未解決のエラーがあります。先にチェック結果を確認してください")
+        merged = self.merge_ledger_exports(import_ids)
+        output = Path(output).resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n", quoting=csv.QUOTE_MINIMAL)
+            writer.writeheader()
+            for row in merged["rows"]:
+                writer.writerow({k: row.get(k, "") for k in LEDGER_COLUMNS})
         return output
 
     def build_comparison(self, export_data_import_id: int, template_id: int) -> dict[str, Any]:

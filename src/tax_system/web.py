@@ -75,6 +75,13 @@ def create_app(home: str | Path | None = None) -> Flask:
                     ts = system()
                     if report_type == "ledger":
                         import_id = ts.import_ledger(path)
+                    elif report_type == "ledger_pos":
+                        result = ts.import_ledger_pos(path)
+                        import_id = result["import_id"]
+                        flash(f"取り込みました（{result['imported']}件・「承認済み」以外を{result['skipped']}件除外）", "success")
+                    elif report_type == "ledger_identity":
+                        result = ts.import_ledger_identity(path)
+                        import_id = result["import_id"]
                     elif report_type == "inventory":
                         import_id = ts.import_inventory(path)
                     elif report_type == "export_data":
@@ -167,6 +174,23 @@ def create_app(home: str | Path | None = None) -> Flask:
         except ValueError as exc:
             flash(f"出力に失敗しました: {exc}", "error")
             return redirect(url_for("ledger_completion_view", import_id=import_id))
+        return redirect(url_for("download", filename=output.name))
+
+    @app.route("/ledger-merge", methods=["POST"])
+    def ledger_merge():
+        ts = system()
+        import_ids = [int(v) for v in request.form.getlist("import_ids")]
+        if len(import_ids) < 2:
+            flash("結合するには古物台帳の取込を2件以上選んでください", "error")
+            return redirect(url_for("index"))
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        output = OUTPUT_DIR / f"結合_ledger_{stamp}.csv"
+        try:
+            ts.export_merged_ledger(import_ids, output)
+        except ValueError as exc:
+            flash(f"結合に失敗しました: {exc}", "error")
+            return redirect(url_for("index"))
         return redirect(url_for("download", filename=output.name))
 
     @app.route("/build-comparison/<int:import_id>", methods=["GET", "POST"])

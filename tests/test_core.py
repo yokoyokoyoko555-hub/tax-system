@@ -5,7 +5,14 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from tax_system.core import EXPORT_DATA_COLUMNS, INVENTORY_COLUMNS, LEDGER_COLUMNS, TaxSystem
+from tax_system.core import (
+    EXPORT_DATA_COLUMNS,
+    INVENTORY_COLUMNS,
+    LEDGER_COLUMNS,
+    LEDGER_IDENTITY_COLUMNS,
+    LEDGER_POS_COLUMNS,
+    TaxSystem,
+)
 
 
 class LedgerTests(unittest.TestCase):
@@ -268,6 +275,109 @@ class BuildComparisonTests(unittest.TestCase):
 
         checks = self.app.validate(result["import_id"])
         self.assertTrue(any(c.code == "ALLOCATION_NOT_FOUND" for c in checks))
+
+
+class RawLedgerImportTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.app = TaxSystem(self.root / "runtime")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_pos_csv(self, rows):
+        path = self.root / "pos.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_POS_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(dict(zip(LEDGER_POS_COLUMNS, row)))
+        return path
+
+    def write_identity_xlsx(self, rows):
+        wb = Workbook()
+        ws = wb.active
+        for col, value in enumerate(LEDGER_IDENTITY_COLUMNS, 1):
+            ws.cell(1, col).value = value
+        for r, row in enumerate(rows, 2):
+            for col, value in enumerate(row, 1):
+                ws.cell(r, col).value = value
+        path = self.root / "identity.xlsx"
+        wb.save(path)
+        return path
+
+    def test_pos_import_maps_fields_and_skips_unapproved(self):
+        result = self.app.import_ledger_pos(self.write_pos_csv([
+            ["1", "承認済み", "2026-04-01 10:00:00", "1", "テスト太郎", "明細なし", "カードA", "1", "1000", "1000", "備考1", "全体1"],
+            ["2", "却下", "2026-04-02 10:00:00", "1", "テスト次郎", "明細なし", "カードB", "1", "500", "500", "", ""],
+        ]))
+        self.assertEqual(1, result["imported"])
+        self.assertEqual(1, result["skipped"])
+        records, _ = self.app.get_records(result["import_id"])
+        data = records[0]["data"]
+        self.assertEqual("テスト太郎", data["名前"])
+        self.assertEqual("カードA", data["商品名"])
+        self.assertEqual("", data["ふりがな"])
+        self.assertIn("備考1", data["備考"])
+        self.assertIn("全体1", data["備考"])
+
+    def test_identity_import_maps_fields_and_ignores_trailing_blank_column(self):
+        result = self.app.import_ledger_identity(self.write_identity_xlsx([
+            ["2026-04-01", "テスト太郎", "てすとたろう", "1990-01-01", "匿名住所", "000-0000", 5000],
+        ]))
+        self.assertEqual(1, result["imported"])
+        records, _ = self.app.get_records(result["import_id"])
+        data = records[0]["data"]
+        self.assertEqual("てすとたろう", data["ふりがな"])
+        self.assertEqual("", data["商品名"])
+        self.assertEqual(5000, data["金額"])
+
+
+class MergeLedgerTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.app = TaxSystem(self.root / "runtime")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_ledger(self, rows, name):
+        path = self.root / name
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(dict(zip(LEDGER_COLUMNS, row)))
+        return path
+
+    def test_merge_blocked_while_errors_remain(self):
+        first = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "えー", "1990-01-01", "住所A", "000", "商品A", "1", "1000", "1000", ""],
+        ], "a.csv"))
+        second = self.app.import_ledger(self.write_ledger([
+            ["2026-04-02", "", "", "", "", "", "商品B", "1", "2000", "2000", ""],
+        ], "b.csv"))
+        with self.assertRaises(ValueError):
+            self.app.export_merged_ledger([first, second], self.root / "merged.csv")
+
+    def test_merge_combines_rows_and_flags_duplicates(self):
+        first = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "えー", "1990-01-01", "住所A", "000", "商品A", "1", "1000", "1000", ""],
+        ], "a.csv"))
+        second = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "えー", "1990-01-01", "住所A", "000", "商品A", "1", "1000", "1000", ""],
+            ["2026-04-03", "B", "びー", "1991-01-01", "住所B", "000", "商品C", "1", "3000", "3000", ""],
+        ], "b.csv"))
+        merged = self.app.merge_ledger_exports([first, second])
+        self.assertEqual(3, len(merged["rows"]))
+        self.assertEqual(1, len(merged["duplicates"]))
+
+        output = self.app.export_merged_ledger([first, second], self.root / "merged.csv")
+        with output.open(encoding="utf-8-sig") as fh:
+            rows = list(csv.DictReader(fh))
+        self.assertEqual(3, len(rows))
 
 
 if __name__ == "__main__": unittest.main()

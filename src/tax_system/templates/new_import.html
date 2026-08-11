@@ -7,7 +7,9 @@
 <form class="card" method="post" enctype="multipart/form-data">
   <label>種類
     <select name="report_type" required>
-      <option value="ledger">古物台帳（CSV）</option>
+      <option value="ledger">古物台帳（CSV・標準11列）</option>
+      <option value="ledger_pos">古物台帳（POS取引データCSV・本人確認情報なし）</option>
+      <option value="ledger_identity">古物台帳（本人確認データExcel・商品情報なし）</option>
       <option value="comparison">相対表（Excel・完成済みのもの）</option>
       <option value="inventory">期末在庫表（CSV・商品名/仕入れ原価/在庫数）</option>
       <option value="export_data">輸出データ（CSV・年月日/品名/金額/数量/小計/相手方名/支払方法/通貨）</option>
@@ -20,4 +22,9 @@
 
   <button type="submit" class="button">取り込む</button>
 </form>
+
+<p class="muted">
+  POS取引データ・本人確認データは、それぞれ持っている情報だけを古物台帳に反映します（無い項目は空欄）。
+  空欄になった商品情報は「内訳復元」画面、複数の取込をまとめたい場合はホーム画面の「古物台帳を結合して出力」から対応できます。
+</p>
 {% endblock %}

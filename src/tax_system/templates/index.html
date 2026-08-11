@@ -14,11 +14,17 @@
 <section class="card">
   <h2>取込済みデータ</h2>
   {% if imports %}
+  <form method="post" action="{{ url_for('ledger_merge') }}">
   <table>
-    <thead><tr><th>ID</th><th>種類</th><th>ファイル名</th><th>取込日時</th><th></th></tr></thead>
+    <thead><tr><th></th><th>ID</th><th>種類</th><th>ファイル名</th><th>取込日時</th><th></th></tr></thead>
     <tbody>
       {% for imp in imports %}
       <tr>
+        <td>
+          {% if imp.kind == "ledger" %}
+          <input type="checkbox" name="import_ids" value="{{ imp.id }}">
+          {% endif %}
+        </td>
         <td>{{ imp.id }}</td>
         <td>{{ kind_labels[imp.kind] }}</td>
         <td>{{ imp.source_name }}</td>
@@ -39,6 +45,11 @@
       {% endfor %}
     </tbody>
   </table>
+  <p>
+    <button type="submit" class="button small">選択した古物台帳を結合して出力</button>
+    <span class="muted">古物台帳のみチェックできます。2件以上選択してください。各取込にエラーが残っていると結合できません。</span>
+  </p>
+  </form>
   {% else %}
   <p class="muted">まだデータが取り込まれていません。</p>
   {% endif %}
