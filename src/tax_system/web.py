@@ -96,6 +96,27 @@ def create_app(home: str | Path | None = None) -> Flask:
             return redirect(url_for("validate_import", import_id=import_id))
         return render_template("new_import.html")
 
+    @app.route("/import/bulk", methods=["GET", "POST"])
+    def bulk_import():
+        if request.method == "POST":
+            uploads = [u for u in request.files.getlist("files") if u and u.filename]
+            if not uploads:
+                flash("ファイルを選択してください", "error")
+                return redirect(url_for("bulk_import"))
+            ts = system()
+            results = []
+            with tempfile.TemporaryDirectory() as tmp:
+                for upload in uploads:
+                    path = Path(tmp) / secure_filename(upload.filename)
+                    upload.save(path)
+                    try:
+                        result = ts.import_auto(path)
+                        results.append({"filename": upload.filename, "ok": True, **result})
+                    except ValueError as exc:
+                        results.append({"filename": upload.filename, "ok": False, "error": str(exc)})
+            return render_template("bulk_import_result.html", results=results)
+        return render_template("bulk_import.html")
+
     @app.route("/validate/<int:import_id>")
     def validate_import(import_id: int):
         ts = system()

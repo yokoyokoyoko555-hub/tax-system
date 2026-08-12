@@ -309,6 +309,37 @@ class TaxSystem:
         rows = list(reader)
         return self._save_import("export_data", source.name, sha256(source), rows, {"encoding": encoding, "columns": reader.fieldnames})
 
+    def import_auto(self, source: str | Path) -> dict[str, Any]:
+        """ファイルの拡張子と列構成から種類を自動判定して取り込む（一括取込用）。
+        各形式の列は互いに重ならないため、既存の取込処理を順番に試し、
+        列が一致したものをそのまま採用する。
+        """
+        source = Path(source).resolve(strict=True)
+        suffix = source.suffix.lower()
+        if suffix == ".csv":
+            candidates: list[tuple[str, Any]] = [
+                ("古物台帳", lambda: {"kind": "ledger", "import_id": self.import_ledger(source)}),
+                ("古物台帳（POS取引データ）", lambda: {"kind": "ledger", **self.import_ledger_pos(source)}),
+                ("期末在庫表", lambda: {"kind": "inventory", "import_id": self.import_inventory(source)}),
+                ("輸出データ", lambda: {"kind": "export_data", "import_id": self.import_export_data(source)}),
+            ]
+        elif suffix == ".xlsx":
+            candidates = [
+                ("相対表", lambda: {"kind": "comparison", "import_id": self.import_comparison(source)}),
+                ("古物台帳（本人確認データ）", lambda: {"kind": "ledger", **self.import_ledger_identity(source)}),
+            ]
+        else:
+            raise ValueError(f"対応していないファイル形式です: {source.name}")
+
+        for label, fn in candidates:
+            try:
+                result = fn()
+            except ValueError:
+                continue
+            return {"label": label, **result}
+        known = "・".join(label for label, _ in candidates)
+        raise ValueError(f"列構成から種類を判別できませんでした（{known} のいずれでもありません）")
+
     def _save_import(self, kind: str, source_name: str, source_hash: str,
                      rows: Iterable[dict[str, Any]], metadata: dict[str, Any]) -> int:
         now = datetime.now().isoformat(timespec="seconds")

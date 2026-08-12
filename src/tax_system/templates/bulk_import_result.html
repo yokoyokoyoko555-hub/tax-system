@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}まとめて取込 結果{% endblock %}
+{% block content %}
+<h1>取込結果</h1>
+
+<table>
+  <thead><tr><th>ファイル名</th><th>判定した種類</th><th>結果</th><th></th></tr></thead>
+  <tbody>
+    {% for r in results %}
+    <tr class="{{ '' if r.ok else 'level-error' }}">
+      <td>{{ r.filename }}</td>
+      <td>{{ r.label if r.ok else "-" }}</td>
+      <td>
+        {% if r.ok %}
+          取込成功
+          {% if r.imported is defined %}（{{ r.imported }}件{% if r.skipped %}・「承認済み」以外を{{ r.skipped }}件除外{% endif %}）{% endif %}
+        {% else %}
+          {{ r.error }}
+        {% endif %}
+      </td>
+      <td>
+        {% if r.ok %}
+        <a class="button small" href="{{ url_for('validate_import', import_id=r.import_id) }}">チェック結果を見る</a>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<p class="muted">
+  <a href="{{ url_for('bulk_import') }}">← もう一度まとめて取り込む</a>　｜
+  <a href="{{ url_for('index') }}">ホームに戻る</a>
+</p>
+{% endblock %}

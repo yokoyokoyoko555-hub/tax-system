@@ -334,6 +334,56 @@ class RawLedgerImportTests(unittest.TestCase):
         self.assertEqual(5000, data["金額"])
 
 
+class AutoImportTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.app = TaxSystem(self.root / "runtime")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_csv(self, columns, rows, name):
+        path = self.root / name
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=columns, lineterminator="\r\n")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(dict(zip(columns, row)))
+        return path
+
+    def test_detects_ledger_csv(self):
+        path = self.write_csv(LEDGER_COLUMNS, [
+            ["2026-04-01", "A", "えー", "1990-01-01", "住所A", "000", "商品A", "1", "1000", "1000", ""],
+        ], "unknown.csv")
+        result = self.app.import_auto(path)
+        self.assertEqual("ledger", result["kind"])
+
+    def test_detects_inventory_csv(self):
+        path = self.write_csv(INVENTORY_COLUMNS, [["商品X", "1000", "5"]], "unknown2.csv")
+        result = self.app.import_auto(path)
+        self.assertEqual("inventory", result["kind"])
+
+    def test_detects_export_data_csv(self):
+        path = self.write_csv(EXPORT_DATA_COLUMNS, [
+            ["2026-05-01", "品X", "1000", "1", "1000", "海外顧客", "銀行振込", "JPY"],
+        ], "unknown3.csv")
+        result = self.app.import_auto(path)
+        self.assertEqual("export_data", result["kind"])
+
+    def test_detects_pos_csv(self):
+        path = self.write_csv(LEDGER_POS_COLUMNS, [
+            ["1", "承認済み", "2026-04-01 10:00:00", "1", "テスト太郎", "明細なし", "カードA", "1", "1000", "1000", "", ""],
+        ], "unknown4.csv")
+        result = self.app.import_auto(path)
+        self.assertEqual("ledger", result["kind"])
+
+    def test_unrecognized_csv_raises(self):
+        path = self.write_csv(["列A", "列B"], [["1", "2"]], "unknown5.csv")
+        with self.assertRaises(ValueError):
+            self.app.import_auto(path)
+
+
 class MergeLedgerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
