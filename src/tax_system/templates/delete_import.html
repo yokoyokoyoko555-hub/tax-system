@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}取込の削除{% endblock %}
+{% block content %}
+<h1>取込を削除しますか？</h1>
+
+<section class="card level-error">
+  <p>
+    取込ID {{ imp.id }}（{{ kind_labels[imp.kind] }} / {{ imp.source_name }} / {{ imp.imported_at }}）<br>
+    件数: {{ total }}件
+  </p>
+  <p class="muted">
+    この取込のデータ・内訳・仕入対応を削除します。元に戻せません。
+    誤って同じファイルを2回取り込んだ場合などにお使いください。
+  </p>
+  <form method="post">
+    <button type="submit" class="button">削除する</button>
+  </form>
+</section>
+
+<p class="muted"><a href="{{ url_for('index') }}">← 削除せずホームに戻る</a></p>
+{% endblock %}

@@ -420,6 +420,22 @@ class TaxSystem:
         data["metadata"] = json.loads(data.pop("metadata_json"))
         return data
 
+    def _record_month(self, kind: str, data: dict[str, Any], sheet_headers: dict[str, list] | None) -> str | None:
+        if kind == "ledger":
+            d = _to_date(data.get("日時"))
+        elif kind == "export_data":
+            d = _to_date(data.get("年月日"))
+        elif kind == "comparison" and sheet_headers:
+            headers = sheet_headers.get(data.get("sheet"))
+            if not headers:
+                return None
+            split = next((i for i, h in enumerate(headers) if i > 0 and h == "年月日"), None)
+            values = data.get("values", [])
+            d = _to_date(values[split]) if split is not None and split < len(values) else None
+        else:
+            return None
+        return f"{d.year:04d}-{d.month:02d}" if d else None
+
     def get_records(self, import_id: int, sheet: str | None = None, month: str | None = None,
                     offset: int = 0, limit: int = 100) -> tuple[list[dict[str, Any]], int]:
         where = "import_id=?"
@@ -431,15 +447,20 @@ class TaxSystem:
             # month filtering inspects the JSON date field, so it can't be pushed into SQL;
             # fetch everything for the import and filter/paginate in Python instead.
             with closing(self.connect()) as db, db:
+                imp = db.execute("SELECT kind, metadata_json FROM imports WHERE id=?", (import_id,)).fetchone()
                 rows = db.execute(
                     f"SELECT * FROM records WHERE {where} ORDER BY sheet_name, row_no", params
                 ).fetchall()
+            kind = imp["kind"] if imp else ""
+            sheet_headers = None
+            if kind == "comparison" and imp:
+                metadata = json.loads(imp["metadata_json"])
+                sheet_headers = {s["name"]: s["headers"] for s in metadata.get("sheets", [])}
             results = []
             for row in rows:
                 item = dict(row)
                 item["data"] = json.loads(item.pop("data_json"))
-                d = _to_date(item["data"].get("日時"))
-                if d is not None and f"{d.year:04d}-{d.month:02d}" == month:
+                if self._record_month(kind, item["data"], sheet_headers) == month:
                     results.append(item)
             return results[offset:offset + limit], len(results)
         with closing(self.connect()) as db, db:
@@ -455,14 +476,22 @@ class TaxSystem:
             results.append(item)
         return results, total
 
-    def list_ledger_months(self, import_id: int) -> list[str]:
+    def list_months(self, import_id: int) -> list[str]:
         with closing(self.connect()) as db, db:
+            imp = db.execute("SELECT kind, metadata_json FROM imports WHERE id=?", (import_id,)).fetchone()
+            if not imp:
+                return []
             rows = db.execute("SELECT data_json FROM records WHERE import_id=?", (import_id,)).fetchall()
+        kind = imp["kind"]
+        sheet_headers = None
+        if kind == "comparison":
+            metadata = json.loads(imp["metadata_json"])
+            sheet_headers = {s["name"]: s["headers"] for s in metadata.get("sheets", [])}
         months: set[str] = set()
         for row in rows:
-            d = _to_date(json.loads(row["data_json"]).get("日時"))
-            if d is not None:
-                months.add(f"{d.year:04d}-{d.month:02d}")
+            m = self._record_month(kind, json.loads(row["data_json"]), sheet_headers)
+            if m:
+                months.add(m)
         return sorted(months)
 
     def list_exports(self) -> list[dict[str, Any]]:
@@ -886,6 +915,20 @@ class TaxSystem:
         with closing(self.connect()) as db, db:
             db.execute("DELETE FROM ledger_items WHERE id=? AND source='manual'", (item_id,))
 
+    def delete_import(self, import_id: int) -> None:
+        """取込を削除する（誤って同じファイルを2回取り込んだ場合などの手動クリーンアップ用）。
+        紐づく明細・手動内訳・仕入対応も合わせて削除する。過去の出力履歴（exports）は
+        監査証跡として残す。
+        """
+        with closing(self.connect()) as db, db:
+            imp = db.execute("SELECT id FROM imports WHERE id=?", (import_id,)).fetchone()
+            if not imp:
+                raise ValueError("取込IDが見つかりません")
+            db.execute("DELETE FROM ledger_items WHERE ledger_import_id=?", (import_id,))
+            db.execute("DELETE FROM allocations WHERE sale_import_id=?", (import_id,))
+            db.execute("DELETE FROM records WHERE import_id=?", (import_id,))
+            db.execute("DELETE FROM imports WHERE id=?", (import_id,))
+
     def export_completed_ledger(self, ledger_import_id: int, output: str | Path) -> Path:
         breakdown = self.propose_ledger_breakdown(ledger_import_id)
         unresolved = [b for b in breakdown if not b["resolved"]]
@@ -964,6 +1007,20 @@ class TaxSystem:
             {"source_format": "merged", "merged_from": import_ids},
         )
         return {"import_id": import_id, "total": len(merged["rows"]), "duplicates": merged["duplicates"]}
+
+    def auto_merge_ledger_imports(self) -> dict[str, Any]:
+        """未結合の古物台帳の取込（まだどの結合にも含まれていない生データ）をすべて自動で結合する。
+        どれとどれを結合するかを選ぶ必要はない。既存の結合結果は対象に含めない（重複結合を防ぐため）。
+        """
+        with closing(self.connect()) as db, db:
+            rows = db.execute("SELECT id, metadata_json FROM imports WHERE kind='ledger'").fetchall()
+        raw_ids = [
+            row["id"] for row in rows
+            if json.loads(row["metadata_json"]).get("source_format") != "merged"
+        ]
+        if len(raw_ids) < 2:
+            raise ValueError("結合できる古物台帳の取込が2件未満です")
+        return self.merge_ledger_imports(raw_ids)
 
     def build_comparison(self, export_data_import_id: int, template_id: int) -> dict[str, Any]:
         """輸出データ（払出し側のみ）と古物台帳から、指定テンプレートの構造に沿った

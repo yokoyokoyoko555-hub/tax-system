@@ -45,6 +45,17 @@ class LedgerTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.app.export(import_id, self.root / "blocked.csv")
         self.app.export(import_id, self.root / "preview.csv", preview=True)
 
+    def test_delete_import_removes_records(self):
+        row = dict(zip(LEDGER_COLUMNS, ["2026-01-01", "テスト", "てすと", "2000-01-01", "匿名住所", "000", "商品", "2", "100", "200", ""]))
+        path = self.write_csv(row)
+        import_id = self.app.import_ledger(path)
+        self.app.delete_import(import_id)
+        self.assertIsNone(self.app.get_import(import_id))
+        records, total = self.app.get_records(import_id)
+        self.assertEqual(0, total)
+        with self.assertRaises(ValueError):
+            self.app.delete_import(import_id)
+
 
 class AllocationTests(unittest.TestCase):
     PURCHASE_HEADERS = ["年月日", "品目", "数量", "相手方名", "代価"]
@@ -450,6 +461,31 @@ class MergeLedgerTests(unittest.TestCase):
         with output.open(encoding="utf-8-sig") as fh:
             rows = list(csv.DictReader(fh))
         self.assertEqual(3, len(rows))
+
+    def test_auto_merge_requires_no_selection_and_excludes_prior_merges(self):
+        first = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "えー", "1990-01-01", "住所A", "000", "商品A", "1", "1000", "1000", ""],
+        ], "a.csv"))
+        second = self.app.import_ledger(self.write_ledger([
+            ["2026-05-01", "B", "びー", "1991-01-01", "住所B", "000", "商品B", "1", "2000", "2000", ""],
+        ], "b.csv"))
+        first_merge = self.app.auto_merge_ledger_imports()
+        self.assertEqual(2, first_merge["total"])
+
+        third = self.app.import_ledger(self.write_ledger([
+            ["2026-06-01", "C", "しー", "1992-01-01", "住所C", "000", "商品C", "1", "3000", "3000", ""],
+        ], "c.csv"))
+        second_merge = self.app.auto_merge_ledger_imports()
+        # re-derives from the three raw imports, not from the first merge result
+        self.assertEqual(3, second_merge["total"])
+        self.assertNotEqual(first_merge["import_id"], second_merge["import_id"])
+
+    def test_auto_merge_fails_with_fewer_than_two_raw_imports(self):
+        self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "えー", "1990-01-01", "住所A", "000", "商品A", "1", "1000", "1000", ""],
+        ], "a.csv"))
+        with self.assertRaises(ValueError):
+            self.app.auto_merge_ledger_imports()
 
 
 if __name__ == "__main__": unittest.main()

@@ -102,7 +102,7 @@ def create_app(home: str | Path | None = None) -> Flask:
         page = max(1, request.args.get("page", 1, type=int))
         sheets = [s["name"] for s in imp["metadata"].get("sheets", [])] if imp["kind"] == "comparison" else []
         sheet = request.args.get("sheet") or (sheets[0] if sheets else None)
-        months = ts.list_ledger_months(import_id) if imp["kind"] == "ledger" else []
+        months = ts.list_months(import_id) if imp["kind"] in ("ledger", "export_data", "comparison") else []
         month = request.args.get("month") if months else None
         if months and month not in months:
             month = months[-1]
@@ -169,12 +169,8 @@ def create_app(home: str | Path | None = None) -> Flask:
     @app.route("/ledger-merge", methods=["POST"])
     def ledger_merge():
         ts = system()
-        import_ids = [int(v) for v in request.form.getlist("import_ids")]
-        if len(import_ids) < 2:
-            flash("結合するには古物台帳の取込を2件以上選んでください", "error")
-            return redirect(url_for("index"))
         try:
-            result = ts.merge_ledger_imports(import_ids)
+            result = ts.auto_merge_ledger_imports()
         except ValueError as exc:
             flash(f"結合に失敗しました: {exc}", "error")
             return redirect(url_for("index"))
@@ -328,6 +324,19 @@ def create_app(home: str | Path | None = None) -> Flask:
             flash(f"出力に失敗しました: {exc}", "error")
             return redirect(url_for("validate_import", import_id=import_id))
         return redirect(url_for("download", filename=output.name))
+
+    @app.route("/imports/<int:import_id>/delete", methods=["GET", "POST"])
+    def delete_import_view(import_id: int):
+        ts = system()
+        imp = ts.get_import(import_id)
+        if not imp:
+            abort(404)
+        if request.method == "POST":
+            ts.delete_import(import_id)
+            flash(f"取込ID {import_id}（{imp['source_name']}）を削除しました", "success")
+            return redirect(url_for("index"))
+        _, total = ts.get_records(import_id, limit=1)
+        return render_template("delete_import.html", imp=imp, total=total)
 
     @app.route("/download/<path:filename>")
     def download(filename: str):

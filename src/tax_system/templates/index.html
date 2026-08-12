@@ -19,17 +19,11 @@
 <section class="card">
   <h2>取込済みデータ</h2>
   {% if imports %}
-  <form method="post" action="{{ url_for('ledger_merge') }}">
   <table>
-    <thead><tr><th></th><th>ID</th><th>種類</th><th>ファイル名</th><th>取込日時</th><th></th></tr></thead>
+    <thead><tr><th>ID</th><th>種類</th><th>ファイル名</th><th>取込日時</th><th></th></tr></thead>
     <tbody>
       {% for imp in imports %}
       <tr>
-        <td>
-          {% if imp.kind == "ledger" %}
-          <input type="checkbox" name="import_ids" value="{{ imp.id }}">
-          {% endif %}
-        </td>
         <td>{{ imp.id }}</td>
         <td>{{ kind_labels[imp.kind] }}</td>
         <td>{{ imp.source_name }}</td>
@@ -45,15 +39,17 @@
           {% if imp.kind == "export_data" %}
           <a class="button small" href="{{ url_for('build_comparison_view', import_id=imp.id) }}">相対表を組み立てる</a>
           {% endif %}
+          <a class="button small" href="{{ url_for('delete_import_view', import_id=imp.id) }}">削除</a>
         </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
-  <p>
-    <button type="submit" class="button small">選択した古物台帳を結合する</button>
-    <span class="muted">古物台帳のみチェックできます。2件以上選択してください。エラーが残っていても結合でき、内訳復元は結合後にまとめて1回行えます。元の取込はそのまま残ります。</span>
-  </p>
+  <form method="post" action="{{ url_for('ledger_merge') }}">
+    <p>
+      <button type="submit" class="button small">未結合の古物台帳をすべて結合する</button>
+      <span class="muted">日時・氏名などから自動で結合します。どれを選ぶかは指定不要です。エラーが残っていても結合でき、内訳復元は結合後にまとめて1回行えます。元の取込はそのまま残ります。</span>
+    </p>
   </form>
   {% else %}
   <p class="muted">まだデータが取り込まれていません。</p>
