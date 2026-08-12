@@ -3,7 +3,10 @@
 {% block content %}
 <h1>データの取込</h1>
 <p class="lead">古物台帳CSV・相対表Excel・期末在庫表CSV・輸出データCSVを取り込みます。取込後は自動でチェック結果画面に進みます。</p>
-<p><a href="{{ url_for('bulk_import') }}">複数ファイルをまとめて取り込む場合はこちら →</a></p>
+<p>
+  <a href="{{ url_for('bulk_import') }}">複数ファイルをまとめて取り込む場合はこちら →</a>　｜
+  <a href="{{ url_for('export_entry') }}">輸出データを画面から手入力する場合はこちら →</a>
+</p>
 
 <form class="card" method="post" enctype="multipart/form-data">
   <label>種類

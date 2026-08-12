@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}輸出取引の入力{% endblock %}
+{% block content %}
+<h1>輸出取引を手入力</h1>
+<p class="lead">1回の取引(1つの請求書)の情報を入力してください。あとで商品を1件ずつ追加していきます。</p>
+
+<form class="card" method="post" action="{{ url_for('export_entry_start') }}">
+  <label>年月日
+    <input type="date" name="date" required>
+  </label>
+  <label>相手方名（顧客名）
+    <input type="text" name="customer" required>
+  </label>
+  <label>支払方法
+    <input type="text" name="payment" placeholder="例: PayPal、銀行振込">
+  </label>
+  <label>通貨
+    <select name="currency">
+      <option value="JPY">JPY（円）</option>
+      <option value="USD">USD（米ドル）</option>
+      <option value="HKD">HKD（香港ドル）</option>
+    </select>
+  </label>
+  <button type="submit" class="button">次へ（商品を追加）</button>
+</form>
+{% endblock %}

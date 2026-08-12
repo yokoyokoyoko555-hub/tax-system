@@ -6,10 +6,10 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, abort, flash, redirect, render_template, request, send_file, url_for
+from flask import Flask, abort, flash, redirect, render_template, request, send_file, session, url_for
 from werkzeug.utils import secure_filename
 
-from .core import EXPORT_DATA_COLUMNS, INVENTORY_COLUMNS, LEDGER_COLUMNS, TaxSystem
+from .core import EXPORT_DATA_COLUMNS, INVENTORY_COLUMNS, LEDGER_COLUMNS, TaxSystem, translate_ja_to_en
 
 KIND_LABELS = {"ledger": "古物台帳", "comparison": "相対表", "inventory": "期末在庫表", "export_data": "輸出データ"}
 FLAT_COLUMNS = {"ledger": LEDGER_COLUMNS, "inventory": INVENTORY_COLUMNS, "export_data": EXPORT_DATA_COLUMNS}
@@ -213,6 +213,85 @@ def create_app(home: str | Path | None = None) -> Flask:
             flash(f"結合に失敗しました: {exc}", "error")
             return redirect(url_for("index"))
         return redirect(url_for("download", filename=output.name))
+
+    @app.route("/export-entry", methods=["GET"])
+    def export_entry():
+        draft = session.get("export_draft")
+        if not draft:
+            return render_template("export_entry_start.html")
+        return render_template("export_entry_items.html", draft=draft)
+
+    @app.route("/export-entry/start", methods=["POST"])
+    def export_entry_start():
+        session["export_draft"] = {
+            "date": request.form.get("date", "").strip(),
+            "customer": request.form.get("customer", "").strip(),
+            "payment": request.form.get("payment", "").strip(),
+            "currency": request.form.get("currency", "JPY").strip(),
+            "items": [],
+        }
+        return redirect(url_for("export_entry"))
+
+    @app.route("/export-entry/add-item", methods=["POST"])
+    def export_entry_add_item():
+        draft = session.get("export_draft")
+        if not draft:
+            return redirect(url_for("export_entry"))
+        product = request.form.get("product", "").strip()
+        try:
+            qty = float(request.form.get("qty", ""))
+            price = float(request.form.get("price", ""))
+        except ValueError:
+            flash("数量・単価は数値で入力してください", "error")
+            return redirect(url_for("export_entry"))
+        if not product:
+            flash("品名を入力してください", "error")
+            return redirect(url_for("export_entry"))
+        eng = translate_ja_to_en(product)
+        if eng is None:
+            flash("英語名の自動翻訳に失敗しました。英語名は手動で入力してください", "error")
+        draft["items"].append({"product": product, "eng": eng or "", "qty": qty, "price": price, "subtotal": qty * price})
+        session["export_draft"] = draft
+        return redirect(url_for("export_entry"))
+
+    @app.route("/export-entry/edit-item/<int:index>", methods=["POST"])
+    def export_entry_edit_item(index: int):
+        draft = session.get("export_draft")
+        if not draft or not (0 <= index < len(draft["items"])):
+            return redirect(url_for("export_entry"))
+        draft["items"][index]["eng"] = request.form.get("eng", "").strip()
+        session["export_draft"] = draft
+        return redirect(url_for("export_entry"))
+
+    @app.route("/export-entry/remove-item/<int:index>", methods=["POST"])
+    def export_entry_remove_item(index: int):
+        draft = session.get("export_draft")
+        if draft and 0 <= index < len(draft["items"]):
+            draft["items"].pop(index)
+            session["export_draft"] = draft
+        return redirect(url_for("export_entry"))
+
+    @app.route("/export-entry/cancel", methods=["POST"])
+    def export_entry_cancel():
+        session.pop("export_draft", None)
+        return redirect(url_for("index"))
+
+    @app.route("/export-entry/finish", methods=["POST"])
+    def export_entry_finish():
+        draft = session.get("export_draft")
+        if not draft or not draft["items"]:
+            flash("商品を1件以上追加してください", "error")
+            return redirect(url_for("export_entry"))
+        ts = system()
+        rows = [{
+            "年月日": draft["date"], "品名": item["product"], "金額": item["price"],
+            "数量": item["qty"], "小計": item["subtotal"], "相手方名": draft["customer"],
+            "支払方法": draft["payment"], "通貨": draft["currency"], "英語名": item["eng"],
+        } for item in draft["items"]]
+        source_name = f"手入力（{draft['date']}・{draft['customer']}）"
+        import_id = ts.record_export_entry(rows, source_name)
+        session.pop("export_draft", None)
+        return redirect(url_for("validate_import", import_id=import_id))
 
     @app.route("/build-comparison/<int:import_id>", methods=["GET", "POST"])
     def build_comparison_view(import_id: int):

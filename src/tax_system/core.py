@@ -24,6 +24,35 @@ LEDGER_POS_COLUMNS = ["履歴ID", "状態", "日時", "ユーザーID", "氏名"
 LEDGER_IDENTITY_COLUMNS = ["日時", "名前", "名前ふりがな", "生年月日", "住所", "電話番号", "金額"]
 
 
+def translate_ja_to_en(text: str) -> str | None:
+    """商品名をインボイス用の簡潔な英語名に翻訳する。OPENAI_API_KEY が未設定、
+    またはAPI呼び出しに失敗した場合は None を返す（呼び出し側で手入力に切り替える）。
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key or not text.strip():
+        return None
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0,
+            messages=[
+                {"role": "system", "content": (
+                    "あなたは古物・トレーディングカード商品の名称を、輸出インボイスに記載する"
+                    "簡潔な英語名に翻訳するアシスタントです。説明や注釈を付けず、英語名だけを"
+                    "1行で答えてください。"
+                )},
+                {"role": "user", "content": text},
+            ],
+        )
+        result = (response.choices[0].message.content or "").strip()
+        return result or None
+    except Exception:
+        return None
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -339,6 +368,16 @@ class TaxSystem:
             return {"label": label, **result}
         known = "・".join(label for label, _ in candidates)
         raise ValueError(f"列構成から種類を判別できませんでした（{known} のいずれでもありません）")
+
+    def record_export_entry(self, rows: list[dict[str, Any]], label: str) -> int:
+        """画面から手入力した輸出取引（品名・数量・単価などを1件ずつ追加したもの）を
+        輸出データの取込として保存する。ファイルではなく手入力のため、参照用のラベルのみ記録する。
+        """
+        self.initialize()
+        return self._save_import(
+            "export_data", label, "manual-entry", rows,
+            {"encoding": "manual", "source_format": "manual_entry", "columns": EXPORT_DATA_COLUMNS},
+        )
 
     def _save_import(self, kind: str, source_name: str, source_hash: str,
                      rows: Iterable[dict[str, Any]], metadata: dict[str, Any]) -> int:

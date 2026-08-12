@@ -276,6 +276,21 @@ class BuildComparisonTests(unittest.TestCase):
         checks = self.app.validate(result["import_id"])
         self.assertTrue(any(c.code == "ALLOCATION_NOT_FOUND" for c in checks))
 
+    def test_manual_export_entry_feeds_build_comparison(self):
+        self.app.import_ledger(self.write_ledger([
+            ["2026-01-01", "Aさん", "えー", "1990-01-01", "匿名住所", "000", "カードX", "1", "1000", "1000", ""],
+        ]))
+        export_id = self.app.record_export_entry([{
+            "年月日": "2026-03-01", "品名": "カードX", "金額": 2000, "数量": 1, "小計": 2000,
+            "相手方名": "海外顧客1", "支払方法": "銀行振込", "通貨": "JPY", "英語名": "Card X",
+        }], "手入力（テスト）")
+        template_id = self.register_template()
+
+        result = self.app.build_comparison(export_id, template_id)
+        self.assertEqual(1, result["total"])
+        self.assertEqual(0, result["unmatched"])
+        self.assertEqual([], self.app.validate(result["import_id"]))
+
 
 class RawLedgerImportTests(unittest.TestCase):
     def setUp(self):

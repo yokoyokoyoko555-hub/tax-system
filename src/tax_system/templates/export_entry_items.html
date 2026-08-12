@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}輸出取引の入力{% endblock %}
+{% block content %}
+<h1>輸出取引を手入力</h1>
+<p class="lead">
+  {{ draft.date }} / {{ draft.customer }} / {{ draft.payment or "支払方法未入力" }} / {{ draft.currency }}
+</p>
+
+<section class="card">
+  <h2>商品一覧</h2>
+  {% if draft['items'] %}
+  <table>
+    <thead><tr><th>品名</th><th>英語名</th><th>数量</th><th>単価</th><th>小計</th><th></th></tr></thead>
+    <tbody>
+      {% for item in draft['items'] %}
+      <tr>
+        <td>{{ item.product }}</td>
+        <td>
+          <form method="post" action="{{ url_for('export_entry_edit_item', index=loop.index0) }}" style="display:flex; gap:0.4rem;">
+            <input type="text" name="eng" value="{{ item.eng }}" style="flex:1;">
+            <button type="submit" class="button small">更新</button>
+          </form>
+        </td>
+        <td>{{ item.qty }}</td>
+        <td>{{ item.price }}</td>
+        <td>{{ item.subtotal }}</td>
+        <td>
+          <form method="post" action="{{ url_for('export_entry_remove_item', index=loop.index0) }}">
+            <button type="submit" class="button small">削除</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">まだ商品が追加されていません。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>商品を追加</h2>
+  <form method="post" action="{{ url_for('export_entry_add_item') }}">
+    <label>品名（日本語）
+      <input type="text" name="product" required>
+    </label>
+    <label>数量
+      <input type="number" name="qty" step="any" min="0" required>
+    </label>
+    <label>単価
+      <input type="number" name="price" step="any" min="0" required>
+    </label>
+    <button type="submit" class="button">追加（英語名を自動翻訳）</button>
+  </form>
+</section>
+
+<p>
+  <form method="post" action="{{ url_for('export_entry_finish') }}" style="display:inline;">
+    <button type="submit" class="button">この取引を確定する</button>
+  </form>
+  <form method="post" action="{{ url_for('export_entry_cancel') }}" style="display:inline;">
+    <button type="submit" class="button small">取消して最初から</button>
+  </form>
+</p>
+{% endblock %}
