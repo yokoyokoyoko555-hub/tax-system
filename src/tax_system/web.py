@@ -63,46 +63,10 @@ def create_app(home: str | Path | None = None) -> Flask:
     @app.route("/import", methods=["GET", "POST"])
     def new_import():
         if request.method == "POST":
-            upload = request.files.get("file")
-            if not upload or not upload.filename:
-                flash("ファイルを選択してください", "error")
-                return redirect(url_for("new_import"))
-            report_type = request.form["report_type"]
-            with tempfile.TemporaryDirectory() as tmp:
-                path = Path(tmp) / secure_filename(upload.filename)
-                upload.save(path)
-                try:
-                    ts = system()
-                    if report_type == "ledger":
-                        import_id = ts.import_ledger(path)
-                    elif report_type == "ledger_pos":
-                        result = ts.import_ledger_pos(path)
-                        import_id = result["import_id"]
-                        flash(f"取り込みました（{result['imported']}件・「承認済み」以外を{result['skipped']}件除外）", "success")
-                    elif report_type == "ledger_identity":
-                        result = ts.import_ledger_identity(path)
-                        import_id = result["import_id"]
-                    elif report_type == "inventory":
-                        import_id = ts.import_inventory(path)
-                    elif report_type == "export_data":
-                        import_id = ts.import_export_data(path)
-                    else:
-                        import_id = ts.import_comparison(path)
-                except ValueError as exc:
-                    flash(f"取込に失敗しました: {exc}", "error")
-                    return redirect(url_for("new_import"))
-            if report_type == "inventory":
-                return redirect(url_for("index"))
-            return redirect(url_for("validate_import", import_id=import_id))
-        return render_template("new_import.html", selected_type=request.args.get("type", "ledger"))
-
-    @app.route("/import/bulk", methods=["GET", "POST"])
-    def bulk_import():
-        if request.method == "POST":
             uploads = [u for u in request.files.getlist("files") if u and u.filename]
             if not uploads:
                 flash("ファイルを選択してください", "error")
-                return redirect(url_for("bulk_import"))
+                return redirect(url_for("new_import"))
             ts = system()
             results = []
             with tempfile.TemporaryDirectory() as tmp:
@@ -114,8 +78,8 @@ def create_app(home: str | Path | None = None) -> Flask:
                         results.append({"filename": upload.filename, "ok": True, **result})
                     except ValueError as exc:
                         results.append({"filename": upload.filename, "ok": False, "error": str(exc)})
-            return render_template("bulk_import_result.html", results=results)
-        return render_template("bulk_import.html")
+            return render_template("import_result.html", results=results)
+        return render_template("new_import.html")
 
     @app.route("/validate/<int:import_id>")
     def validate_import(import_id: int):
@@ -138,7 +102,11 @@ def create_app(home: str | Path | None = None) -> Flask:
         page = max(1, request.args.get("page", 1, type=int))
         sheets = [s["name"] for s in imp["metadata"].get("sheets", [])] if imp["kind"] == "comparison" else []
         sheet = request.args.get("sheet") or (sheets[0] if sheets else None)
-        rows, total = ts.get_records(import_id, sheet=sheet, offset=(page - 1) * per_page, limit=per_page)
+        months = ts.list_ledger_months(import_id) if imp["kind"] == "ledger" else []
+        month = request.args.get("month") if months else None
+        if months and month not in months:
+            month = months[-1]
+        rows, total = ts.get_records(import_id, sheet=sheet, month=month, offset=(page - 1) * per_page, limit=per_page)
         headers = next((s["headers"] for s in imp["metadata"].get("sheets", []) if s["name"] == sheet), None)
         display_headers = [h for h in headers if h] if headers else None
         if display_headers is not None:
@@ -148,7 +116,8 @@ def create_app(home: str | Path | None = None) -> Flask:
         return render_template(
             "records.html", imp=imp, rows=rows, headers=display_headers,
             flat_columns=FLAT_COLUMNS.get(imp["kind"]),
-            sheets=sheets, sheet=sheet, page=page, total=total, total_pages=total_pages,
+            sheets=sheets, sheet=sheet, months=months, month=month,
+            page=page, total=total, total_pages=total_pages,
         )
 
     @app.route("/ledger-completion/<int:import_id>")

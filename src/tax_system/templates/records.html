@@ -20,6 +20,20 @@
 </p>
 {% endif %}
 
+{% if months %}
+<p>
+  月別:
+  {% for m in months %}
+    {% if m == month %}
+      <strong>{{ m }}</strong>
+    {% else %}
+      <a href="{{ url_for('records_view', import_id=imp.id, month=m) }}">{{ m }}</a>
+    {% endif %}
+    {% if not loop.last %} | {% endif %}
+  {% endfor %}
+</p>
+{% endif %}
+
 <div class="card" style="overflow-x:auto;">
   <table>
     <thead>
@@ -49,9 +63,9 @@
 
 {% if total_pages > 1 %}
 <p class="muted">
-  {% if page > 1 %}<a href="{{ url_for('records_view', import_id=imp.id, sheet=sheet, page=page-1) }}">← 前へ</a>{% endif %}
+  {% if page > 1 %}<a href="{{ url_for('records_view', import_id=imp.id, sheet=sheet, month=month, page=page-1) }}">← 前へ</a>{% endif %}
   {{ page }} / {{ total_pages }} ページ
-  {% if page < total_pages %}<a href="{{ url_for('records_view', import_id=imp.id, sheet=sheet, page=page+1) }}">次へ →</a>{% endif %}
+  {% if page < total_pages %}<a href="{{ url_for('records_view', import_id=imp.id, sheet=sheet, month=month, page=page+1) }}">次へ →</a>{% endif %}
 </p>
 {% endif %}
 

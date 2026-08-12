@@ -420,13 +420,28 @@ class TaxSystem:
         data["metadata"] = json.loads(data.pop("metadata_json"))
         return data
 
-    def get_records(self, import_id: int, sheet: str | None = None, offset: int = 0,
-                    limit: int = 100) -> tuple[list[dict[str, Any]], int]:
+    def get_records(self, import_id: int, sheet: str | None = None, month: str | None = None,
+                    offset: int = 0, limit: int = 100) -> tuple[list[dict[str, Any]], int]:
         where = "import_id=?"
         params: list[Any] = [import_id]
         if sheet is not None:
             where += " AND sheet_name=?"
             params.append(sheet)
+        if month is not None:
+            # month filtering inspects the JSON date field, so it can't be pushed into SQL;
+            # fetch everything for the import and filter/paginate in Python instead.
+            with closing(self.connect()) as db, db:
+                rows = db.execute(
+                    f"SELECT * FROM records WHERE {where} ORDER BY sheet_name, row_no", params
+                ).fetchall()
+            results = []
+            for row in rows:
+                item = dict(row)
+                item["data"] = json.loads(item.pop("data_json"))
+                d = _to_date(item["data"].get("日時"))
+                if d is not None and f"{d.year:04d}-{d.month:02d}" == month:
+                    results.append(item)
+            return results[offset:offset + limit], len(results)
         with closing(self.connect()) as db, db:
             total = db.execute(f"SELECT COUNT(*) FROM records WHERE {where}", params).fetchone()[0]
             rows = db.execute(
@@ -439,6 +454,16 @@ class TaxSystem:
             item["data"] = json.loads(item.pop("data_json"))
             results.append(item)
         return results, total
+
+    def list_ledger_months(self, import_id: int) -> list[str]:
+        with closing(self.connect()) as db, db:
+            rows = db.execute("SELECT data_json FROM records WHERE import_id=?", (import_id,)).fetchall()
+        months: set[str] = set()
+        for row in rows:
+            d = _to_date(json.loads(row["data_json"]).get("日時"))
+            if d is not None:
+                months.add(f"{d.year:04d}-{d.month:02d}")
+        return sorted(months)
 
     def list_exports(self) -> list[dict[str, Any]]:
         with closing(self.connect()) as db, db:

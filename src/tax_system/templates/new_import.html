@@ -2,33 +2,21 @@
 {% block title %}データ取込{% endblock %}
 {% block content %}
 <h1>データの取込</h1>
-<p class="lead">古物台帳CSV・相対表Excel・期末在庫表CSV・輸出データCSVを取り込みます。取込後は自動でチェック結果画面に進みます。</p>
-<p>
-  <a href="{{ url_for('bulk_import') }}">複数ファイルをまとめて取り込む場合はこちら →</a>　｜
-  <a href="{{ url_for('export_entry') }}">輸出データを画面から手入力する場合はこちら →</a>
+<p class="lead">
+  古物台帳・POS取引データ・本人確認データ・相対表(完成済み)・期末在庫表・輸出データのファイルを、
+  種類の指定なしでまとめて取り込みます。ファイルごとに列構成から種類を自動判定します。1件だけでもまとめてでも取り込めます。
+  判別できないファイルはスキップされ、理由が表示されます。
 </p>
 
 <form class="card" method="post" enctype="multipart/form-data">
-  <label>種類
-    <select name="report_type" required>
-      <option value="ledger" {% if selected_type == "ledger" %}selected{% endif %}>古物台帳（CSV・標準11列）</option>
-      <option value="ledger_pos" {% if selected_type == "ledger_pos" %}selected{% endif %}>古物台帳（POS取引データCSV・本人確認情報なし）</option>
-      <option value="ledger_identity" {% if selected_type == "ledger_identity" %}selected{% endif %}>古物台帳（本人確認データExcel・商品情報なし）</option>
-      <option value="comparison" {% if selected_type == "comparison" %}selected{% endif %}>相対表（Excel・完成済みのもの）</option>
-      <option value="inventory" {% if selected_type == "inventory" %}selected{% endif %}>期末在庫表（CSV・商品名/仕入れ原価/在庫数）</option>
-      <option value="export_data" {% if selected_type == "export_data" %}selected{% endif %}>輸出データ（CSV・年月日/品名/金額/数量/小計/相手方名/支払方法/通貨）</option>
-    </select>
+  <label>ファイル（複数選択可）
+    <input type="file" name="files" accept=".xlsx,.csv" multiple required>
   </label>
-
-  <label>ファイル
-    <input type="file" name="file" accept=".xlsx,.csv" required>
-  </label>
-
   <button type="submit" class="button">取り込む</button>
 </form>
 
 <p class="muted">
-  POS取引データ・本人確認データは、それぞれ持っている情報だけを古物台帳に反映します（無い項目は空欄）。
-  空欄になった商品情報は「内訳復元」画面、複数の取込をまとめたい場合はホーム画面の「古物台帳を結合して出力」から対応できます。
+  空欄になった商品情報は「内訳復元」画面、複数の古物台帳をまとめたい場合はホーム画面の「古物台帳を結合する」から対応できます。
+  輸出データは<a href="{{ url_for('export_entry') }}">画面から手入力</a>することもできます。
 </p>
 {% endblock %}
