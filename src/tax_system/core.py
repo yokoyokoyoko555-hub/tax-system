@@ -62,6 +62,21 @@ def _to_date(value: Any) -> date | None:
         return None
 
 
+def _read_csv_text(source: Path) -> tuple[str, str]:
+    if source.suffix.lower() != ".csv":
+        raise ValueError(
+            f"CSVファイルを選択してください（{source.name} は .csv ではないようです。"
+            "Excelファイルの場合は取込画面で正しい種類を選んでください）"
+        )
+    raw = source.read_bytes()
+    for encoding in ("utf-8-sig", "cp932"):
+        try:
+            return raw.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(f"{source.name} の文字コードを判別できません（UTF-8・Shift-JISのいずれでもありません）")
+
+
 def _index_of(headers: list[Any], name: str, contains: bool = False) -> int | None:
     for index, header in enumerate(headers):
         if header is None:
@@ -178,11 +193,7 @@ class TaxSystem:
     def import_ledger(self, source: str | Path) -> int:
         self.initialize()
         source = Path(source).resolve(strict=True)
-        raw = source.read_bytes()
-        try:
-            text, encoding = raw.decode("utf-8-sig"), "utf-8-sig"
-        except UnicodeDecodeError:
-            text, encoding = raw.decode("cp932"), "cp932"
+        text, encoding = _read_csv_text(source)
         reader = csv.DictReader(text.splitlines())
         if reader.fieldnames != LEDGER_COLUMNS:
             raise ValueError(f"古物台帳の列が既存仕様と一致しません: {reader.fieldnames}")
@@ -196,11 +207,7 @@ class TaxSystem:
         """
         self.initialize()
         source = Path(source).resolve(strict=True)
-        raw = source.read_bytes()
-        try:
-            text, encoding = raw.decode("utf-8-sig"), "utf-8-sig"
-        except UnicodeDecodeError:
-            text, encoding = raw.decode("cp932"), "cp932"
+        text, encoding = _read_csv_text(source)
         reader = csv.DictReader(text.splitlines())
         if reader.fieldnames != LEDGER_POS_COLUMNS:
             raise ValueError(f"POS取引データの列が想定と一致しません（{LEDGER_POS_COLUMNS}）: {reader.fieldnames}")
@@ -229,6 +236,8 @@ class TaxSystem:
         """
         self.initialize()
         source = Path(source).resolve(strict=True)
+        if source.suffix.lower() != ".xlsx":
+            raise ValueError(f"Excelファイル（.xlsx）を選択してください: {source.name}")
         wb = load_workbook(source, read_only=True, data_only=True)
         try:
             ws = wb.worksheets[0]
@@ -259,6 +268,8 @@ class TaxSystem:
     def import_comparison(self, source: str | Path) -> int:
         self.initialize()
         source = Path(source).resolve(strict=True)
+        if source.suffix.lower() != ".xlsx":
+            raise ValueError(f"Excelファイル（.xlsx）を選択してください: {source.name}")
         wb = load_workbook(source, read_only=False, data_only=False)
         records: list[dict[str, Any]] = []
         sheets: list[dict[str, Any]] = []
@@ -281,11 +292,7 @@ class TaxSystem:
     def import_inventory(self, source: str | Path) -> int:
         self.initialize()
         source = Path(source).resolve(strict=True)
-        raw = source.read_bytes()
-        try:
-            text, encoding = raw.decode("utf-8-sig"), "utf-8-sig"
-        except UnicodeDecodeError:
-            text, encoding = raw.decode("cp932"), "cp932"
+        text, encoding = _read_csv_text(source)
         reader = csv.DictReader(text.splitlines())
         if reader.fieldnames != INVENTORY_COLUMNS:
             raise ValueError(f"期末在庫表の列が想定と一致しません（{INVENTORY_COLUMNS}）: {reader.fieldnames}")
@@ -295,11 +302,7 @@ class TaxSystem:
     def import_export_data(self, source: str | Path) -> int:
         self.initialize()
         source = Path(source).resolve(strict=True)
-        raw = source.read_bytes()
-        try:
-            text, encoding = raw.decode("utf-8-sig"), "utf-8-sig"
-        except UnicodeDecodeError:
-            text, encoding = raw.decode("cp932"), "cp932"
+        text, encoding = _read_csv_text(source)
         reader = csv.DictReader(text.splitlines())
         if reader.fieldnames != EXPORT_DATA_COLUMNS:
             raise ValueError(f"輸出データの列が想定と一致しません（{EXPORT_DATA_COLUMNS}）: {reader.fieldnames}")
