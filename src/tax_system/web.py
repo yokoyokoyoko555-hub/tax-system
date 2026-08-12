@@ -94,7 +94,7 @@ def create_app(home: str | Path | None = None) -> Flask:
             if report_type == "inventory":
                 return redirect(url_for("index"))
             return redirect(url_for("validate_import", import_id=import_id))
-        return render_template("new_import.html")
+        return render_template("new_import.html", selected_type=request.args.get("type", "ledger"))
 
     @app.route("/import/bulk", methods=["GET", "POST"])
     def bulk_import():
@@ -204,15 +204,16 @@ def create_app(home: str | Path | None = None) -> Flask:
         if len(import_ids) < 2:
             flash("結合するには古物台帳の取込を2件以上選んでください", "error")
             return redirect(url_for("index"))
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        output = OUTPUT_DIR / f"結合_ledger_{stamp}.csv"
         try:
-            ts.export_merged_ledger(import_ids, output)
+            result = ts.merge_ledger_imports(import_ids)
         except ValueError as exc:
             flash(f"結合に失敗しました: {exc}", "error")
             return redirect(url_for("index"))
-        return redirect(url_for("download", filename=output.name))
+        if result["duplicates"]:
+            flash(f"結合しました（{result['total']}件・重複の可能性がある行が{len(result['duplicates'])}件あります。内容を確認してください）", "error")
+        else:
+            flash(f"結合しました（{result['total']}件）", "success")
+        return redirect(url_for("ledger_completion_view", import_id=result["import_id"]))
 
     @app.route("/export-entry", methods=["GET"])
     def export_entry():

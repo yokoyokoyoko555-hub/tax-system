@@ -11,12 +11,12 @@
 <form class="card" method="post" enctype="multipart/form-data">
   <label>種類
     <select name="report_type" required>
-      <option value="ledger">古物台帳（CSV・標準11列）</option>
-      <option value="ledger_pos">古物台帳（POS取引データCSV・本人確認情報なし）</option>
-      <option value="ledger_identity">古物台帳（本人確認データExcel・商品情報なし）</option>
-      <option value="comparison">相対表（Excel・完成済みのもの）</option>
-      <option value="inventory">期末在庫表（CSV・商品名/仕入れ原価/在庫数）</option>
-      <option value="export_data">輸出データ（CSV・年月日/品名/金額/数量/小計/相手方名/支払方法/通貨）</option>
+      <option value="ledger" {% if selected_type == "ledger" %}selected{% endif %}>古物台帳（CSV・標準11列）</option>
+      <option value="ledger_pos" {% if selected_type == "ledger_pos" %}selected{% endif %}>古物台帳（POS取引データCSV・本人確認情報なし）</option>
+      <option value="ledger_identity" {% if selected_type == "ledger_identity" %}selected{% endif %}>古物台帳（本人確認データExcel・商品情報なし）</option>
+      <option value="comparison" {% if selected_type == "comparison" %}selected{% endif %}>相対表（Excel・完成済みのもの）</option>
+      <option value="inventory" {% if selected_type == "inventory" %}selected{% endif %}>期末在庫表（CSV・商品名/仕入れ原価/在庫数）</option>
+      <option value="export_data" {% if selected_type == "export_data" %}selected{% endif %}>輸出データ（CSV・年月日/品名/金額/数量/小計/相手方名/支払方法/通貨）</option>
     </select>
   </label>
 

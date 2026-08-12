@@ -924,20 +924,21 @@ class TaxSystem:
         rows.sort(key=lambda r: r.get("日時") or "")
         return {"rows": rows, "duplicates": duplicates}
 
-    def export_merged_ledger(self, import_ids: list[int], output: str | Path) -> Path:
-        for import_id in import_ids:
-            checks = self.validate(import_id)
-            if any(c.level == "error" for c in checks):
-                raise ValueError(f"取込ID {import_id} に未解決のエラーがあります。先にチェック結果を確認してください")
+    def merge_ledger_imports(self, import_ids: list[int]) -> dict[str, Any]:
+        """複数の古物台帳の取込を、新しい1件の古物台帳の取込としてまとめる。
+        内訳復元・チェックをまとめて1回で行えるよう、取込直後（エラーが残っていて）でも結合できる。
+        元の取込は削除せず、参照用にそのまま残す。
+        """
+        with closing(self.connect()) as db, db:
+            placeholders = ",".join("?" * len(import_ids))
+            imps = db.execute(f"SELECT * FROM imports WHERE id IN ({placeholders})", import_ids).fetchall()
         merged = self.merge_ledger_exports(import_ids)
-        output = Path(output).resolve()
-        output.parent.mkdir(parents=True, exist_ok=True)
-        with output.open("w", encoding="utf-8-sig", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n", quoting=csv.QUOTE_MINIMAL)
-            writer.writeheader()
-            for row in merged["rows"]:
-                writer.writerow({k: row.get(k, "") for k in LEDGER_COLUMNS})
-        return output
+        names = "・".join(imp["source_name"] for imp in imps)
+        import_id = self._save_import(
+            "ledger", f"結合（{names}）", "merged", merged["rows"],
+            {"source_format": "merged", "merged_from": import_ids},
+        )
+        return {"import_id": import_id, "total": len(merged["rows"]), "duplicates": merged["duplicates"]}
 
     def build_comparison(self, export_data_import_id: int, template_id: int) -> dict[str, Any]:
         """輸出データ（払出し側のみ）と古物台帳から、指定テンプレートの構造に沿った

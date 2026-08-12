@@ -11,7 +11,10 @@
     <a class="brand" href="{{ url_for('index') }}">帳票管理システム</a>
     <nav>
       <a href="{{ url_for('index') }}">ホーム</a>
-      <a href="{{ url_for('new_import') }}">データ取込</a>
+      <a href="{{ url_for('new_import', type='ledger') }}">古物台帳</a>
+      <a href="{{ url_for('new_import', type='inventory') }}">期末在庫表</a>
+      <a href="{{ url_for('new_import', type='comparison') }}">相対表</a>
+      <a href="{{ url_for('export_entry') }}">輸出入力</a>
       <a href="{{ url_for('new_template') }}">テンプレート登録</a>
     </nav>
   </header>

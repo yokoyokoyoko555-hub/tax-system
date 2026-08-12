@@ -417,15 +417,18 @@ class MergeLedgerTests(unittest.TestCase):
                 writer.writerow(dict(zip(LEDGER_COLUMNS, row)))
         return path
 
-    def test_merge_blocked_while_errors_remain(self):
+    def test_merge_allowed_even_with_unresolved_errors(self):
         first = self.app.import_ledger(self.write_ledger([
             ["2026-04-01", "A", "えー", "1990-01-01", "住所A", "000", "商品A", "1", "1000", "1000", ""],
         ], "a.csv"))
         second = self.app.import_ledger(self.write_ledger([
             ["2026-04-02", "", "", "", "", "", "商品B", "1", "2000", "2000", ""],
         ], "b.csv"))
-        with self.assertRaises(ValueError):
-            self.app.export_merged_ledger([first, second], self.root / "merged.csv")
+        result = self.app.merge_ledger_imports([first, second])
+        self.assertEqual(2, result["total"])
+        checks = self.app.validate(result["import_id"])
+        self.assertTrue(any(c.code == "REQUIRED" for c in checks))
+        self.assertEqual(3, len(self.app.list_imports()))  # originals kept, plus the new merged one
 
     def test_merge_combines_rows_and_flags_duplicates(self):
         first = self.app.import_ledger(self.write_ledger([
@@ -435,11 +438,15 @@ class MergeLedgerTests(unittest.TestCase):
             ["2026-04-01", "A", "えー", "1990-01-01", "住所A", "000", "商品A", "1", "1000", "1000", ""],
             ["2026-04-03", "B", "びー", "1991-01-01", "住所B", "000", "商品C", "1", "3000", "3000", ""],
         ], "b.csv"))
-        merged = self.app.merge_ledger_exports([first, second])
-        self.assertEqual(3, len(merged["rows"]))
-        self.assertEqual(1, len(merged["duplicates"]))
+        result = self.app.merge_ledger_imports([first, second])
+        self.assertEqual(3, result["total"])
+        self.assertEqual(1, len(result["duplicates"]))
 
-        output = self.app.export_merged_ledger([first, second], self.root / "merged.csv")
+        # the intentional duplicate row is also caught by the normal ledger validation
+        checks = self.app.validate(result["import_id"])
+        self.assertTrue(any(c.code == "DUPLICATE" for c in checks))
+
+        output = self.app.export(result["import_id"], self.root / "merged.csv", preview=True)
         with output.open(encoding="utf-8-sig") as fh:
             rows = list(csv.DictReader(fh))
         self.assertEqual(3, len(rows))
