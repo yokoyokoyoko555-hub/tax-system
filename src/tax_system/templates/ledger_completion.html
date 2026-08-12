@@ -80,6 +80,28 @@
     <p class="muted">該当する商品が期末在庫表に見つかりません</p>
     {% endif %}
   {% endif %}
+
+  <form method="post" action="{{ url_for('ledger_completion_suggest', import_id=imp.id, row_no=b.row_no) }}">
+    <button type="submit" class="button small">AIに残額の組み合わせを提案してもらう</button>
+  </form>
+  {% if suggestion and suggestion.row_no == b.row_no %}
+    {% if suggestion['items'] %}
+    <div>
+      <p class="muted">AIによる提案です。内容を確認してから追加してください。</p>
+      {% for it in suggestion['items'] %}
+      <form method="post" action="{{ url_for('ledger_completion_add', import_id=imp.id, row_no=b.row_no) }}"
+            style="display:flex; gap:0.5rem; align-items:center; margin:0.4rem 0;">
+        <input type="hidden" name="product" value="{{ it.product }}">
+        <span style="flex:1;">{{ it.product }}（仕入れ原価 {{ it.unit_cost }}円） 提案合計: {{ it.amount }}円</span>
+        <input type="number" name="qty" step="any" min="0" required value="{{ it.qty }}" style="width:6em;">
+        <button type="submit" class="button small">この提案を追加</button>
+      </form>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="muted">AIから提案を取得できませんでした。</p>
+    {% endif %}
+  {% endif %}
   {% endif %}
 </div>
 {% endfor %}

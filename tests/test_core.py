@@ -1,7 +1,10 @@
 import csv
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from openpyxl import Workbook
 
@@ -12,6 +15,7 @@ from tax_system.core import (
     LEDGER_IDENTITY_COLUMNS,
     LEDGER_POS_COLUMNS,
     TaxSystem,
+    suggest_ledger_items,
 )
 
 
@@ -486,6 +490,33 @@ class MergeLedgerTests(unittest.TestCase):
         ], "a.csv"))
         with self.assertRaises(ValueError):
             self.app.auto_merge_ledger_imports()
+
+
+class SuggestLedgerItemsTests(unittest.TestCase):
+    def test_returns_none_without_api_key(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(suggest_ledger_items(1000, {"A": 500}))
+
+    def test_returns_none_with_empty_inventory(self):
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+            self.assertIsNone(suggest_ledger_items(1000, {}))
+
+    @patch("openai.OpenAI")
+    def test_filters_items_not_in_inventory_and_invalid_qty(self, mock_openai_cls):
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = json.dumps({
+            "items": [
+                {"product": "A", "qty": 2},
+                {"product": "不明な商品", "qty": 1},
+                {"product": "B", "qty": -1},
+            ]
+        })
+        mock_client.chat.completions.create.return_value = mock_response
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+            result = suggest_ledger_items(1000, {"A": 500, "B": 300})
+        self.assertEqual([{"product": "A", "qty": 2, "unit_cost": 500, "amount": 1000}], result)
 
 
 if __name__ == "__main__": unittest.main()

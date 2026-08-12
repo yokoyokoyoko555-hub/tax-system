@@ -131,10 +131,23 @@ def create_app(home: str | Path | None = None) -> Flask:
         query = request.args.get("q", "").strip()
         search_results = ts.search_inventory(query) if query else []
         all_resolved = bool(breakdown) and all(b["resolved"] for b in breakdown)
+        suggestion = session.get("ledger_suggestion")
+        if suggestion and suggestion.get("import_id") != import_id:
+            suggestion = None
         return render_template(
             "ledger_completion.html", imp=imp, breakdown=breakdown,
             search_row=search_row, query=query, search_results=search_results, all_resolved=all_resolved,
+            suggestion=suggestion,
         )
+
+    @app.route("/ledger-completion/<int:import_id>/<int:row_no>/suggest", methods=["POST"])
+    def ledger_completion_suggest(import_id: int, row_no: int):
+        ts = system()
+        items = ts.suggest_ledger_completion(import_id, row_no)
+        if not items:
+            flash("AIによる提案を取得できませんでした（APIキー未設定か、提案できる組み合わせが見つかりませんでした）", "error")
+        session["ledger_suggestion"] = {"import_id": import_id, "row_no": row_no, "items": items or []}
+        return redirect(url_for("ledger_completion_view", import_id=import_id))
 
     @app.route("/ledger-completion/<int:import_id>/<int:row_no>/add", methods=["POST"])
     def ledger_completion_add(import_id: int, row_no: int):

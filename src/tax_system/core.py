@@ -53,6 +53,50 @@ def translate_ja_to_en(text: str) -> str | None:
         return None
 
 
+def suggest_ledger_items(remainder: float, inventory: dict[str, float]) -> list[dict[str, Any]] | None:
+    """内訳復元の残額と期末在庫表の商品リストから、残額に合う商品の組み合わせをAIに提案してもらう。
+    提案はあくまで参考で、実際に追加するかどうかは呼び出し側（人）が選ぶ。
+    OPENAI_API_KEY未設定・在庫が空・API呼び出し失敗時はNoneを返す（呼び出し側は手動検索に切り替える）。
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key or not inventory:
+        return None
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key)
+        catalog = "\n".join(f"- {name}: 仕入れ原価 {cost}円" for name, cost in inventory.items())
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": (
+                    "あなたは古物台帳の内訳復元を手伝うアシスタントです。指定された商品リストの中から、"
+                    "合計金額ができるだけ指定の残額に一致する組み合わせを選んでください。"
+                    'JSON形式 {"items": [{"product": "商品名", "qty": 数量}, ...]} のみで回答してください。'
+                    "リストにない商品名は使わないでください。ぴったり一致する組み合わせがなければ、"
+                    "最も近いものを1つ提案してください。"
+                )},
+                {"role": "user", "content": f"残額: {remainder}円\n商品リスト:\n{catalog}"},
+            ],
+        )
+        payload = json.loads(response.choices[0].message.content or "{}")
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return None
+        result = []
+        for item in items:
+            product = item.get("product") if isinstance(item, dict) else None
+            qty = item.get("qty") if isinstance(item, dict) else None
+            if product in inventory and isinstance(qty, (int, float)) and qty > 0:
+                cost = inventory[product]
+                result.append({"product": product, "qty": qty, "unit_cost": cost, "amount": cost * qty})
+        return result or None
+    except Exception:
+        return None
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -898,6 +942,14 @@ class TaxSystem:
                 "resolved": remainder is not None and abs(remainder) < 0.5,
             })
         return results
+
+    def suggest_ledger_completion(self, ledger_import_id: int, row_no: int) -> list[dict[str, Any]] | None:
+        entry = next(
+            (b for b in self.propose_ledger_breakdown(ledger_import_id) if b["row_no"] == row_no), None,
+        )
+        if not entry or entry["resolved"] or entry["remainder"] is None:
+            return None
+        return suggest_ledger_items(entry["remainder"], self._latest_inventory())
 
     def add_ledger_item(self, ledger_import_id: int, row_no: int, product: str, qty: float) -> None:
         cost = self._latest_inventory().get(product)
