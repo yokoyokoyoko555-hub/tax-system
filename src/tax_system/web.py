@@ -38,6 +38,14 @@ def create_app(home: str | Path | None = None) -> Flask:
             exports=ts.list_exports(),
         )
 
+    @app.route("/library/<kind>")
+    def library_view(kind: str):
+        if kind not in KIND_LABELS:
+            abort(404)
+        ts = system()
+        imports = [imp for imp in ts.list_imports() if imp["kind"] == kind]
+        return render_template("library.html", kind=kind, imports=imports)
+
     @app.route("/templates/new", methods=["GET", "POST"])
     def new_template():
         if request.method == "POST":
