@@ -48,7 +48,7 @@ nav a {
 nav a:hover { text-decoration: underline; }
 
 main {
-  max-width: 880px;
+  max-width: 1400px;
   margin: 0 auto;
   padding: 2rem 1.5rem 4rem;
 }
