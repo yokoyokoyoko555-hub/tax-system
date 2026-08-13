@@ -21,9 +21,9 @@
             <button type="submit" class="button small">更新</button>
           </form>
         </td>
-        <td>{{ item.qty }}</td>
-        <td>{{ item.price }}</td>
-        <td>{{ item.subtotal }}</td>
+        <td>{{ item.qty | num }}</td>
+        <td>{{ item.price | num }}</td>
+        <td>{{ item.subtotal | num }}</td>
         <td>
           <form method="post" action="{{ url_for('export_entry_remove_item', index=loop.index0) }}">
             <button type="submit" class="button small">削除</button>

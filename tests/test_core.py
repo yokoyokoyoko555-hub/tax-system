@@ -615,5 +615,19 @@ class ToDateTests(unittest.TestCase):
         self.assertEqual(expected, _to_date("2025.4.23"))
 
 
+class FormatNumberTests(unittest.TestCase):
+    def test_strips_trailing_zero_and_handles_float_rounding_error(self):
+        from tax_system.web import format_number
+        self.assertEqual(10800, format_number(10800.0))
+        self.assertEqual(10800.5, format_number(10800.5))
+        # Excel formula results can come back as e.g. 1980/1.1 == 1799.9999999999998
+        self.assertEqual(1800, format_number(1799.9999999999998))
+        self.assertEqual(485100, format_number(485100.00000000006))
+        # non-float values (including numeric-looking strings like phone numbers) are untouched
+        self.assertEqual("080-1234-5678", format_number("080-1234-5678"))
+        self.assertEqual(3, format_number(3))
+        self.assertIsNone(format_number(None))
+
+
 if __name__ == "__main__": unittest.main()
 

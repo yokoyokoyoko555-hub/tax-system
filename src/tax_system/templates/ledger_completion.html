@@ -14,7 +14,7 @@
 
 {% for b in breakdown %}
 <div class="card {{ 'success-box' if b.resolved else '' }}">
-  <h2>{{ b.row_no }}行目 — {{ b.name }} / {{ b.date }} / 合計 {{ b.total }}円</h2>
+  <h2>{{ b.row_no }}行目 — {{ b.name }} / {{ b.date }} / 合計 {{ b.total | num }}円</h2>
 
   <table>
     <thead><tr><th>商品名</th><th>数量</th><th>単価</th><th>金額</th><th>由来</th><th></th></tr></thead>
@@ -22,9 +22,9 @@
       {% for item in b.known_items %}
       <tr>
         <td>{{ item.product }}</td>
-        <td>{{ item.qty }}</td>
-        <td>{{ item.unit_cost if item.unit_cost is not none else "在庫表になし" }}</td>
-        <td>{{ item.amount if item.amount is not none else "-" }}</td>
+        <td>{{ item.qty | num }}</td>
+        <td>{{ (item.unit_cost | num) if item.unit_cost is not none else "在庫表になし" }}</td>
+        <td>{{ (item.amount | num) if item.amount is not none else "-" }}</td>
         <td>相対表（確定）</td>
         <td></td>
       </tr>
@@ -32,9 +32,9 @@
       {% for item in b.manual_items %}
       <tr>
         <td>{{ item.product }}</td>
-        <td>{{ item.qty }}</td>
-        <td>{{ item.unit_cost }}</td>
-        <td>{{ item.amount }}</td>
+        <td>{{ item.qty | num }}</td>
+        <td>{{ item.unit_cost | num }}</td>
+        <td>{{ item.amount | num }}</td>
         <td>手動</td>
         <td>
           <form method="post" action="{{ url_for('ledger_completion_remove', import_id=imp.id, row_no=b.row_no, item_id=item.id) }}">
@@ -53,7 +53,7 @@
     {% if b.resolved %}
       残額 0円（合計と一致しています）
     {% else %}
-      残額 {{ b.remainder }}円（期末在庫表から選んで埋めてください）
+      残額 {{ b.remainder | num }}円（期末在庫表から選んで埋めてください）
     {% endif %}
   </p>
 
@@ -70,7 +70,7 @@
       <form method="post" action="{{ url_for('ledger_completion_add', import_id=imp.id, row_no=b.row_no) }}"
             style="display:flex; gap:0.5rem; align-items:center; margin:0.4rem 0;">
         <input type="hidden" name="product" value="{{ r.product }}">
-        <span style="flex:1;">{{ r.product }}（仕入れ原価 {{ r.unit_cost }}円）</span>
+        <span style="flex:1;">{{ r.product }}（仕入れ原価 {{ r.unit_cost | num }}円）</span>
         <input type="number" name="qty" step="any" min="0" required placeholder="数量" style="width:6em;">
         <button type="submit" class="button small">追加</button>
       </form>
@@ -92,8 +92,8 @@
       <form method="post" action="{{ url_for('ledger_completion_add', import_id=imp.id, row_no=b.row_no) }}"
             style="display:flex; gap:0.5rem; align-items:center; margin:0.4rem 0;">
         <input type="hidden" name="product" value="{{ it.product }}">
-        <span style="flex:1;">{{ it.product }}（仕入れ原価 {{ it.unit_cost }}円） 提案合計: {{ it.amount }}円</span>
-        <input type="number" name="qty" step="any" min="0" required value="{{ it.qty }}" style="width:6em;">
+        <span style="flex:1;">{{ it.product }}（仕入れ原価 {{ it.unit_cost | num }}円） 提案合計: {{ it.amount | num }}円</span>
+        <input type="number" name="qty" step="any" min="0" required value="{{ it.qty | num }}" style="width:6em;">
         <button type="submit" class="button small">この提案を追加</button>
       </form>
       {% endfor %}

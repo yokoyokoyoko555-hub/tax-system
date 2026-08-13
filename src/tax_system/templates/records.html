@@ -62,9 +62,9 @@
       <tr>
         <td>{{ row.row_no }}</td>
         {% if flat_columns %}
-          {% for col in flat_columns %}<td>{{ row.data.get(col, "") }}</td>{% endfor %}
+          {% for col in flat_columns %}<td>{{ row.data.get(col, "") | num }}</td>{% endfor %}
         {% else %}
-          {% for v in row.cells %}<td>{{ v if v is not none else "" }}</td>{% endfor %}
+          {% for v in row.cells %}<td>{{ (v | num) if v is not none else "" }}</td>{% endfor %}
         {% endif %}
       </tr>
       {% endfor %}

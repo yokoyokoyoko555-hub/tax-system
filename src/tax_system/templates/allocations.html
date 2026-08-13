@@ -26,7 +26,7 @@
       </td>
       <td>
         {% if r.ledger %}
-          {{ r.ledger.name }} / {{ r.ledger.product }} / {{ r.ledger.date }} / {{ r.ledger.qty }}個 / {{ r.ledger.amount }}円
+          {{ r.ledger.name }} / {{ r.ledger.product }} / {{ r.ledger.date }} / {{ r.ledger.qty | num }}個 / {{ r.ledger.amount | num }}円
         {% else %}
           -
         {% endif %}
@@ -37,7 +37,7 @@
           <select name="ledger_record_id" required>
             <option value="">候補から選択</option>
             {% for c in r.candidates %}
-            <option value="{{ c.id }}">{{ c.name }} / {{ c.product }} / {{ c.date }} / {{ c.qty }}個 / {{ c.amount }}円</option>
+            <option value="{{ c.id }}">{{ c.name }} / {{ c.product }} / {{ c.date }} / {{ c.qty | num }}個 / {{ c.amount | num }}円</option>
             {% endfor %}
           </select>
           <button type="submit" class="button small">この仕入に決定</button>
@@ -61,7 +61,7 @@
             <select name="ledger_record_id" required>
               <option value="">検索結果から選択</option>
               {% for c in search_results %}
-              <option value="{{ c.id }}">{{ c.name }} / {{ c.product }} / {{ c.date }} / {{ c.qty }}個 / {{ c.amount }}円</option>
+              <option value="{{ c.id }}">{{ c.name }} / {{ c.product }} / {{ c.date }} / {{ c.qty | num }}個 / {{ c.amount | num }}円</option>
               {% endfor %}
             </select>
             <button type="submit" class="button small">この仕入に決定</button>

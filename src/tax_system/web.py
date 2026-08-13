@@ -18,11 +18,27 @@ FLAT_COLUMNS = {"ledger": LEDGER_COLUMNS, "inventory": INVENTORY_DISPLAY_COLUMNS
 OUTPUT_DIR = Path("outputs").resolve()
 
 
+def format_number(value):
+    """表示用: 整数値のfloatは末尾の.0を取り除く（10800.0 -> 10800）。
+    実際にfloat型の値だけを対象にする（電話番号・郵便番号など数字に見える
+    文字列は対象外にして、先頭の0が消えるような事故を防ぐ）。計算結果には影響しない。
+    Excelの数式結果は浮動小数点誤差で 1799.9999999999998 のようになることがあるため、
+    丸めた後にあらためて整数判定する。
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        rounded = round(value, 2)
+        return int(rounded) if rounded == int(rounded) else rounded
+    return value
+
+
 def create_app(home: str | Path | None = None) -> Flask:
     app = Flask(__name__)
     app.secret_key = os.environ.get("TAX_SYSTEM_SECRET", "local-only-tax-system")
     app.config["TAX_SYSTEM_HOME"] = home or os.environ.get("TAX_SYSTEM_HOME", ".tax-system")
     app.jinja_env.globals["kind_labels"] = KIND_LABELS
+    app.jinja_env.filters["num"] = format_number
 
     def system() -> TaxSystem:
         ts = TaxSystem(app.config["TAX_SYSTEM_HOME"])
@@ -128,6 +144,8 @@ def create_app(home: str | Path | None = None) -> Flask:
         page = max(1, request.args.get("page", 1, type=int))
         sheets = [s["name"] for s in imp["metadata"].get("sheets", [])] if imp["kind"] == "comparison" else []
         sheet = request.args.get("sheet") or (sheets[0] if sheets else None)
+        if sheets and sheet not in sheets:
+            sheet = sheets[0]
         months = ts.list_months(import_id) if imp["kind"] in ("ledger", "export_data", "comparison") else []
         month = request.args.get("month") if months else None
         if months and month not in months:
