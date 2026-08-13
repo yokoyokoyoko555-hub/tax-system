@@ -9,17 +9,27 @@
     <h2>月ごとに見る</h2>
     <p class="lead">結合済みの古物台帳（取込ID {{ merged.id }}）から、月ごとの件数です。クリックするとその月の中身を表示します。</p>
     <table>
-      <thead><tr><th>年月</th><th>件数</th><th></th></tr></thead>
+      <thead><tr><th>年月</th><th>件数</th><th></th><th>出力</th></tr></thead>
       <tbody>
         {% for m in months %}
         <tr>
           <td>{{ m.month }}</td>
           <td>{{ m.count }}件</td>
           <td><a class="button small" href="{{ url_for('records_view', import_id=merged.id, month=m.month) }}">この月を見る</a></td>
+          <td>
+            <form method="post" action="{{ url_for('export_import', import_id=merged.id) }}" style="display:flex; gap:0.5rem; align-items:center;">
+              <input type="hidden" name="month" value="{{ m.month }}">
+              <label class="checkbox" style="margin:0;">
+                <input type="checkbox" name="preview">確認用
+              </label>
+              <button type="submit" class="button small">この月を出力</button>
+            </form>
+          </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
+    <p class="muted">エラーが残っている月は、確認用のみ出力できます（内訳復元・チェック画面で確認してください）。</p>
     <p>
       <a class="button small" href="{{ url_for('ledger_completion_view', import_id=merged.id) }}">内訳復元</a>
       <a class="button small" href="{{ url_for('validate_import', import_id=merged.id) }}">チェック・出力</a>

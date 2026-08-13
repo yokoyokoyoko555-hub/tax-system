@@ -1265,14 +1265,26 @@ class TaxSystem:
         return {"import_id": import_id, "total": len(rows_out), "unmatched": unmatched}
 
     def export(self, import_id: int, output: str | Path, template_id: int | None = None,
-               preview: bool = False) -> Path:
-        checks = self.validate(import_id)
-        if any(c.level == "error" for c in checks) and not preview:
-            raise ValueError("検証エラーがあるため正式出力できません。--preview を指定すると確認用出力が可能です")
+               preview: bool = False, month: str | None = None) -> Path:
         with closing(self.connect()) as db, db:
             imp = db.execute("SELECT * FROM imports WHERE id=?", (import_id,)).fetchone()
+            if not imp:
+                raise ValueError("取込IDが見つかりません")
             records = db.execute("SELECT * FROM records WHERE import_id=? ORDER BY sheet_name,row_no", (import_id,)).fetchall()
             template = db.execute("SELECT * FROM template_versions WHERE id=?", (template_id,)).fetchone() if template_id else None
+
+        if month is not None:
+            if imp["kind"] != "ledger":
+                raise ValueError("月ごとの出力は古物台帳のみ対応しています")
+            records = [r for r in records if self._record_month("ledger", json.loads(r["data_json"]), None) == month]
+            if not records:
+                raise ValueError(f"{month} の古物台帳データがありません")
+            checks = self._validate_ledger(records)
+        else:
+            checks = self._validate_ledger(records) if imp["kind"] == "ledger" else self.validate(import_id)
+
+        if any(c.level == "error" for c in checks) and not preview:
+            raise ValueError("検証エラーがあるため正式出力できません。--preview を指定すると確認用出力が可能です")
         output = Path(output).resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
         if imp["kind"] == "ledger":

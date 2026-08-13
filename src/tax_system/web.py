@@ -348,15 +348,19 @@ def create_app(home: str | Path | None = None) -> Flask:
             abort(404)
         preview = request.form.get("preview") == "on"
         template_id = request.form.get("template_id") or None
+        month = request.form.get("month") or None
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         suffix = ".csv" if imp["kind"] == "ledger" else ".xlsx"
         prefix = "確認用" if preview else "正式"
-        output = OUTPUT_DIR / f"{prefix}_{imp['kind']}_{import_id}_{stamp}{suffix}"
+        name_part = f"{imp['kind']}_{import_id}" + (f"_{month}" if month else "")
+        output = OUTPUT_DIR / f"{prefix}_{name_part}_{stamp}{suffix}"
         try:
-            ts.export(import_id, output, int(template_id) if template_id else None, preview)
+            ts.export(import_id, output, int(template_id) if template_id else None, preview, month=month)
         except ValueError as exc:
             flash(f"出力に失敗しました: {exc}", "error")
+            if month:
+                return redirect(url_for("records_view", import_id=import_id, month=month))
             return redirect(url_for("validate_import", import_id=import_id))
         return redirect(url_for("download", filename=output.name))
 

@@ -66,6 +66,26 @@ class LedgerTests(unittest.TestCase):
         desc, _ = self.app.get_records(import_id, sort="金額", sort_dir="desc")
         self.assertEqual(["300", "200", "100"], [r["data"]["金額"] for r in desc])
 
+    def test_export_can_filter_to_a_single_month(self):
+        path = self.root / "ledger.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            for date_str, name in [("2026-04-05", "A"), ("2026-04-20", "B"), ("2026-05-03", "C")]:
+                writer.writerow(dict(zip(LEDGER_COLUMNS, [
+                    date_str, name, "", "1990-01-01", "住所", "000", "商品", "1", "1000", "1000", "",
+                ])))
+        import_id = self.app.import_ledger(path)
+
+        output = self.root / "april.csv"
+        self.app.export(import_id, output, month="2026-04")
+        with output.open(encoding="utf-8-sig") as fh:
+            rows = list(csv.DictReader(fh))
+        self.assertEqual({"A", "B"}, {r["名前"] for r in rows})
+
+        with self.assertRaises(ValueError):
+            self.app.export(import_id, self.root / "none.csv", month="2026-06")
+
     def test_header_echoed_as_data_row_is_skipped(self):
         # concatenating multiple exports into one CSV can leave a duplicate header
         # line in the middle, which must not be imported as a real record.
