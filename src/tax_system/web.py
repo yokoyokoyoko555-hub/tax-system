@@ -64,15 +64,35 @@ def create_app(home: str | Path | None = None) -> Flask:
         merged = ts.latest_merged_ledger_import() if kind == "ledger" else None
         months = ts.month_summary(merged["id"]) if merged else []
         comparison_months = None
+        duplicates = None
         if kind == "comparison":
-            comparison_months = [
-                {"import_id": imp["id"], "source_name": imp["source_name"], "months": ts.month_summary(imp["id"])}
-                for imp in imports
-            ]
+            comparison_months = ts.comparison_month_summary()
+            duplicates = ts.find_comparison_duplicates()
         return render_template(
             "library.html", kind=kind, imports=imports, merged=merged, months=months,
-            comparison_months=comparison_months,
+            comparison_months=comparison_months, duplicates=duplicates,
         )
+
+    @app.route("/library/comparison/month/<month>")
+    def comparison_month_view(month: str):
+        ts = system()
+        per_page = 100
+        page = max(1, request.args.get("page", 1, type=int))
+        rows, total = ts.get_comparison_month_records(month, offset=(page - 1) * per_page, limit=per_page)
+        total_pages = max(1, -(-total // per_page))
+        return render_template(
+            "comparison_month.html", month=month, rows=rows, total=total, page=page, total_pages=total_pages,
+        )
+
+    @app.route("/comparison-duplicates/delete", methods=["POST"])
+    def comparison_duplicate_delete():
+        ts = system()
+        import_id = int(request.form["import_id"])
+        sheet = request.form["sheet"]
+        row_no = int(request.form["row_no"])
+        ts.delete_comparison_record(import_id, sheet, row_no)
+        flash("行を削除しました", "success")
+        return redirect(url_for("library_view", kind="comparison"))
 
     @app.route("/templates/new", methods=["GET", "POST"])
     def new_template():

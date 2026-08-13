@@ -629,5 +629,99 @@ class FormatNumberTests(unittest.TestCase):
         self.assertIsNone(format_number(None))
 
 
+class ComparisonLibraryTests(unittest.TestCase):
+    HEADERS = ["年月日", "品目", "数量", "相手方名", "代価", "年月日", "数量"]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.app = TaxSystem(self.root / "runtime")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_ledger(self, rows, name="ledger.csv"):
+        path = self.root / name
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(dict(zip(LEDGER_COLUMNS, row)))
+        return path
+
+    def write_export_data(self, rows, name="export_data.csv"):
+        path = self.root / name
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=EXPORT_DATA_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(dict(zip(EXPORT_DATA_COLUMNS, row)))
+        return path
+
+    def register_template(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "輸出販売"
+        for col, value in enumerate(self.HEADERS, 1):
+            ws.cell(2, col).value = value
+        path = self.root / "template.xlsx"
+        wb.save(path)
+        return self.app.register_template("comparison", path, "test", "v1", "2026-01-01")
+
+    def build_one(self, ledger_rows, export_rows, ledger_name, export_name, template_id=None):
+        self.app.import_ledger(self.write_ledger(ledger_rows, ledger_name))
+        export_id = self.app.import_export_data(self.write_export_data(export_rows, export_name))
+        template_id = template_id or self.register_template()
+        return self.app.build_comparison(export_id, template_id)
+
+    def test_month_summary_and_records_aggregate_across_imports(self):
+        template_id = self.register_template()
+        self.build_one(
+            [["2026-01-01", "Aさん", "えー", "1990-01-01", "匿名住所", "000", "カードX", "1", "1000", "1000", ""]],
+            [["2026-03-01", "カードX", "2000", "1", "2000", "海外顧客1", "銀行振込", "JPY"]],
+            "ledger1.csv", "export1.csv", template_id,
+        )
+        self.build_one(
+            [["2026-01-02", "Bさん", "びー", "1991-01-01", "匿名住所", "000", "カードY", "1", "1200", "1200", ""]],
+            [["2026-03-15", "カードY", "2200", "1", "2200", "海外顧客2", "銀行振込", "JPY"]],
+            "ledger2.csv", "export2.csv", template_id,
+        )
+
+        summary = self.app.comparison_month_summary()
+        self.assertEqual([{"month": "2026-03", "count": 2}], summary)
+
+        rows, total = self.app.get_comparison_month_records("2026-03")
+        self.assertEqual(2, total)
+        self.assertEqual({"カードX", "カードY"}, {r["cells"][1] for r in rows})
+        self.assertEqual(2, len({r["import_id"] for r in rows}))
+
+    def test_find_comparison_duplicates_detects_identical_rows_across_imports(self):
+        template_id = self.register_template()
+        ledger_rows = [["2026-01-01", "Aさん", "えー", "1990-01-01", "匿名住所", "000", "カードX", "2", "1000", "2000", ""]]
+        export_rows = [["2026-03-01", "カードX", "2000", "1", "2000", "海外顧客1", "銀行振込", "JPY"]]
+        self.build_one(ledger_rows, export_rows, "ledger1.csv", "export1.csv", template_id)
+        self.build_one(ledger_rows, export_rows, "ledger2.csv", "export2.csv", template_id)
+
+        duplicates = self.app.find_comparison_duplicates()
+        self.assertEqual(1, len(duplicates))
+        self.assertEqual(2, len(duplicates[0]["occurrences"]))
+
+    def test_delete_comparison_record_removes_row(self):
+        template_id = self.register_template()
+        ledger_rows = [["2026-01-01", "Aさん", "えー", "1990-01-01", "匿名住所", "000", "カードX", "2", "1000", "2000", ""]]
+        export_rows = [["2026-03-01", "カードX", "2000", "1", "2000", "海外顧客1", "銀行振込", "JPY"]]
+        self.build_one(ledger_rows, export_rows, "ledger1.csv", "export1.csv", template_id)
+        self.build_one(ledger_rows, export_rows, "ledger2.csv", "export2.csv", template_id)
+
+        duplicates = self.app.find_comparison_duplicates()
+        occ = duplicates[0]["occurrences"][0]
+
+        self.app.delete_comparison_record(occ["import_id"], occ["sheet"], occ["row_no"])
+
+        self.assertEqual([], self.app.find_comparison_duplicates())
+        _, total = self.app.get_comparison_month_records("2026-03")
+        self.assertEqual(1, total)
+
+
 if __name__ == "__main__": unittest.main()
 

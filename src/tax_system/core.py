@@ -601,6 +601,85 @@ class TaxSystem:
                 counts[m] = counts.get(m, 0) + 1
         return [{"month": m, "count": counts[m]} for m in sorted(counts)]
 
+    def _comparison_sheet_headers_by_import(self) -> dict[int, dict[str, list]]:
+        with closing(self.connect()) as db, db:
+            rows = db.execute("SELECT id, metadata_json FROM imports WHERE kind='comparison'").fetchall()
+        result = {}
+        for row in rows:
+            metadata = json.loads(row["metadata_json"])
+            result[row["id"]] = {s["name"]: s["headers"] for s in metadata.get("sheets", [])}
+        return result
+
+    def comparison_month_summary(self) -> list[dict[str, Any]]:
+        """相対表は古物台帳のように自動結合しないため、全ての取込を横断して月ごとに集計する。"""
+        sheet_headers_by_import = self._comparison_sheet_headers_by_import()
+        with closing(self.connect()) as db, db:
+            rows = db.execute(
+                "SELECT import_id, data_json FROM records r JOIN imports i ON r.import_id=i.id WHERE i.kind='comparison'"
+            ).fetchall()
+        counts: dict[str, int] = {}
+        for row in rows:
+            data = json.loads(row["data_json"])
+            headers = sheet_headers_by_import.get(row["import_id"])
+            m = self._record_month("comparison", data, headers)
+            if m:
+                counts[m] = counts.get(m, 0) + 1
+        return [{"month": m, "count": counts[m]} for m in sorted(counts)]
+
+    def get_comparison_month_records(self, month: str, offset: int = 0,
+                                     limit: int = 100) -> tuple[list[dict[str, Any]], int]:
+        """指定した月（払出し側の年月日）の相対表データを、取込をまたいで横断的に取得する。"""
+        sheet_headers_by_import = self._comparison_sheet_headers_by_import()
+        with closing(self.connect()) as db, db:
+            rows = db.execute(
+                "SELECT r.import_id, r.sheet_name, r.row_no, r.data_json, i.source_name "
+                "FROM records r JOIN imports i ON r.import_id=i.id WHERE i.kind='comparison' "
+                "ORDER BY r.import_id, r.sheet_name, r.row_no"
+            ).fetchall()
+        results = []
+        for row in rows:
+            data = json.loads(row["data_json"])
+            headers = sheet_headers_by_import.get(row["import_id"])
+            if self._record_month("comparison", data, headers) != month:
+                continue
+            item_headers = (headers or {}).get(row["sheet_name"])
+            cells = [v for h, v in zip(item_headers, data["values"]) if h] if item_headers else data["values"]
+            results.append({
+                "import_id": row["import_id"], "source_name": row["source_name"],
+                "sheet_name": row["sheet_name"], "row_no": row["row_no"], "cells": cells,
+                "headers": [h for h in item_headers if h] if item_headers else None,
+            })
+        return results[offset:offset + limit], len(results)
+
+    def find_comparison_duplicates(self) -> list[dict[str, Any]]:
+        """相対表の全取込を横断して、内容が完全に一致する行（同じファイルの重複取込など）をまとめる。"""
+        with closing(self.connect()) as db, db:
+            rows = db.execute(
+                "SELECT r.import_id, r.sheet_name, r.row_no, r.data_json, i.source_name "
+                "FROM records r JOIN imports i ON r.import_id=i.id WHERE i.kind='comparison' "
+                "ORDER BY r.import_id, r.sheet_name, r.row_no"
+            ).fetchall()
+        groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+        for row in rows:
+            data = json.loads(row["data_json"])
+            key = (row["sheet_name"], tuple(v for v in data["values"] if v is not None))
+            groups.setdefault(key, []).append({
+                "import_id": row["import_id"], "source_name": row["source_name"],
+                "sheet": row["sheet_name"], "row_no": row["row_no"],
+            })
+        return [{"occurrences": occ} for occ in groups.values() if len(occ) > 1]
+
+    def delete_comparison_record(self, import_id: int, sheet: str, row_no: int) -> None:
+        with closing(self.connect()) as db, db:
+            db.execute(
+                "DELETE FROM allocations WHERE sale_import_id=? AND sale_sheet=? AND sale_row_no=?",
+                (import_id, sheet, row_no),
+            )
+            db.execute(
+                "DELETE FROM records WHERE import_id=? AND sheet_name=? AND row_no=?",
+                (import_id, sheet, row_no),
+            )
+
     def latest_merged_ledger_import(self) -> dict[str, Any] | None:
         with closing(self.connect()) as db, db:
             rows = db.execute(

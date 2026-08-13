@@ -43,32 +43,58 @@
 {% endif %}
 
 {% if kind == "comparison" %}
+  {% if duplicates %}
+  <section class="card level-error">
+    <h2>重複の可能性がある行（{{ duplicates|length }}件）</h2>
+    <p class="lead">
+      同じ内容の行が複数の取込にまたがっています。同じファイルを2回取り込んだ場合などに起こります。
+      内容を確認して、不要な方を削除するか、そのまま残すか選んでください。
+    </p>
+    {% for group in duplicates %}
+    <table style="margin-bottom:1rem;">
+      <thead><tr><th>取込ID</th><th>ファイル名</th><th>シート</th><th>行</th><th></th></tr></thead>
+      <tbody>
+        {% for occ in group.occurrences %}
+        <tr>
+          <td>{{ occ.import_id }}</td>
+          <td>{{ occ.source_name }}</td>
+          <td>{{ occ.sheet }}</td>
+          <td>{{ occ.row_no }}</td>
+          <td>
+            <a class="button small" href="{{ url_for('records_view', import_id=occ.import_id, sheet=occ.sheet) }}">中身を見る</a>
+            <form method="post" action="{{ url_for('comparison_duplicate_delete') }}" style="display:inline;">
+              <input type="hidden" name="import_id" value="{{ occ.import_id }}">
+              <input type="hidden" name="sheet" value="{{ occ.sheet }}">
+              <input type="hidden" name="row_no" value="{{ occ.row_no }}">
+              <button type="submit" class="button small">この行を削除</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endfor %}
+  </section>
+  {% endif %}
+
   {% if comparison_months %}
   <section class="card">
     <h2>月ごとに見る（販売日基準）</h2>
     <p class="lead">
-      相対表は古物台帳と違って自動結合していないため、取込ごとに月の内訳を表示しています。
-      年月は払出し側（販売）の年月日で区切っています。
+      すべての相対表の取込を横断して、月ごとの件数です。クリックするとその月の中身を表示します。
     </p>
-    {% for entry in comparison_months %}
-      <h3 style="font-size:1rem;">取込ID {{ entry.import_id }}（{{ entry.source_name }}）</h3>
-      {% if entry.months %}
-      <table>
-        <thead><tr><th>年月</th><th>件数</th><th></th></tr></thead>
-        <tbody>
-          {% for m in entry.months %}
-          <tr>
-            <td>{{ m.month }}</td>
-            <td>{{ m.count }}件</td>
-            <td><a class="button small" href="{{ url_for('records_view', import_id=entry.import_id, month=m.month) }}">この月を見る</a></td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% else %}
-      <p class="muted">年月日を判定できる行がありません。</p>
-      {% endif %}
-    {% endfor %}
+    <table>
+      <thead><tr><th>年月</th><th>件数</th><th></th></tr></thead>
+      <tbody>
+        {% for m in comparison_months %}
+        <tr>
+          <td>{{ m.month }}</td>
+          <td>{{ m.count }}件</td>
+          <td><a class="button small" href="{{ url_for('comparison_month_view', month=m.month) }}">この月を見る</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
   </section>
   {% else %}
   <p class="muted">まだ相対表が取り込まれていません。</p>

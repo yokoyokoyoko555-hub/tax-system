@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}相対表 {{ month }}{% endblock %}
+{% block content %}
+<h1>相対表 {{ month }}</h1>
+<p class="lead">
+  すべての取込を横断して、{{ month }} の販売分をまとめて表示しています。全 {{ total }} 件。
+</p>
+
+<div class="card" style="overflow-x:auto;">
+  <table>
+    <thead>
+      <tr>
+        <th>取込ID</th>
+        <th>ファイル名</th>
+        <th>シート</th>
+        <th>行</th>
+        {% if rows and rows[0].headers %}
+          {% for h in rows[0].headers %}<th>{{ h }}</th>{% endfor %}
+        {% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.import_id }}</td>
+        <td>{{ row.source_name }}</td>
+        <td>{{ row.sheet_name }}</td>
+        <td>{{ row.row_no }}</td>
+        {% for v in row.cells %}<td>{{ (v | num) if v is not none else "" }}</td>{% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if total_pages > 1 %}
+<p class="muted">
+  {% if page > 1 %}<a href="{{ url_for('comparison_month_view', month=month, page=page-1) }}">← 前へ</a>{% endif %}
+  {{ page }} / {{ total_pages }} ページ
+  {% if page < total_pages %}<a href="{{ url_for('comparison_month_view', month=month, page=page+1) }}">次へ →</a>{% endif %}
+</p>
+{% endif %}
+
+<p class="muted"><a href="{{ url_for('library_view', kind='comparison') }}">相対表の一覧に戻る</a></p>
+{% endblock %}
