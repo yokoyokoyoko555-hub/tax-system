@@ -652,10 +652,13 @@ class TaxSystem:
         return results[offset:offset + limit], len(results)
 
     def find_comparison_duplicates(self) -> list[dict[str, Any]]:
-        """相対表の全取込を横断して、内容が完全に一致する行（同じファイルの重複取込など）をまとめる。"""
+        """相対表の複数の取込にまたがって、内容が完全に一致する行（同じファイルの重複取込など）
+        をまとめる。同じ取込（同じファイル）内での重複は対象外（意図的に同じ内容の別取引である
+        可能性が高く、件数も多くなりがちなため）。取込日時が古い方の行を削除候補として示す。
+        """
         with closing(self.connect()) as db, db:
             rows = db.execute(
-                "SELECT r.import_id, r.sheet_name, r.row_no, r.data_json, i.source_name "
+                "SELECT r.import_id, r.sheet_name, r.row_no, r.data_json, i.source_name, i.imported_at "
                 "FROM records r JOIN imports i ON r.import_id=i.id WHERE i.kind='comparison' "
                 "ORDER BY r.import_id, r.sheet_name, r.row_no"
             ).fetchall()
@@ -665,9 +668,20 @@ class TaxSystem:
             key = (row["sheet_name"], tuple(v for v in data["values"] if v is not None))
             groups.setdefault(key, []).append({
                 "import_id": row["import_id"], "source_name": row["source_name"],
-                "sheet": row["sheet_name"], "row_no": row["row_no"],
+                "sheet": row["sheet_name"], "row_no": row["row_no"], "imported_at": row["imported_at"],
             })
-        return [{"occurrences": occ} for occ in groups.values() if len(occ) > 1]
+        results = []
+        for occurrences in groups.values():
+            if len(occurrences) < 2:
+                continue
+            if len({o["import_id"] for o in occurrences}) < 2:
+                continue
+            # tie-break same-second imports by import_id, which is always increasing
+            newest_key = max((o["imported_at"], o["import_id"]) for o in occurrences)
+            for o in occurrences:
+                o["recommended_delete"] = (o["imported_at"], o["import_id"]) != newest_key
+            results.append({"occurrences": occurrences})
+        return results
 
     def delete_comparison_record(self, import_id: int, sheet: str, row_no: int) -> None:
         with closing(self.connect()) as db, db:

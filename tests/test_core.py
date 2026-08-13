@@ -746,12 +746,33 @@ class ComparisonLibraryTests(unittest.TestCase):
         template_id = self.register_template()
         ledger_rows = [["2026-01-01", "Aさん", "えー", "1990-01-01", "匿名住所", "000", "カードX", "2", "1000", "2000", ""]]
         export_rows = [["2026-03-01", "カードX", "2000", "1", "2000", "海外顧客1", "銀行振込", "JPY"]]
-        self.build_one(ledger_rows, export_rows, "ledger1.csv", "export1.csv", template_id)
-        self.build_one(ledger_rows, export_rows, "ledger2.csv", "export2.csv", template_id)
+        older = self.build_one(ledger_rows, export_rows, "ledger1.csv", "export1.csv", template_id)
+        newer = self.build_one(ledger_rows, export_rows, "ledger2.csv", "export2.csv", template_id)
 
         duplicates = self.app.find_comparison_duplicates()
         self.assertEqual(1, len(duplicates))
-        self.assertEqual(2, len(duplicates[0]["occurrences"]))
+        occurrences = duplicates[0]["occurrences"]
+        self.assertEqual(2, len(occurrences))
+        by_import = {o["import_id"]: o for o in occurrences}
+        self.assertTrue(by_import[older["import_id"]]["recommended_delete"])
+        self.assertFalse(by_import[newer["import_id"]]["recommended_delete"])
+
+    def test_find_comparison_duplicates_excludes_same_import_repeats(self):
+        # two identical purchases + two identical sales, resolved within a single
+        # build_comparison call: these repeat rows live in the SAME import and should
+        # not be reported (same-file repeats are usually genuine separate transactions).
+        template_id = self.register_template()
+        ledger_rows = [
+            ["2026-01-01", "Aさん", "えー", "1990-01-01", "匿名住所", "000", "カードX", "1", "1000", "1000", ""],
+            ["2026-01-02", "Aさん", "えー", "1990-01-01", "匿名住所", "000", "カードX", "1", "1000", "1000", ""],
+        ]
+        export_rows = [
+            ["2026-03-01", "カードX", "2000", "1", "2000", "海外顧客1", "銀行振込", "JPY"],
+            ["2026-03-01", "カードX", "2000", "1", "2000", "海外顧客1", "銀行振込", "JPY"],
+        ]
+        self.build_one(ledger_rows, export_rows, "ledger1.csv", "export1.csv", template_id)
+
+        self.assertEqual([], self.app.find_comparison_duplicates())
 
     def test_delete_comparison_record_removes_row(self):
         template_id = self.register_template()
@@ -761,7 +782,7 @@ class ComparisonLibraryTests(unittest.TestCase):
         self.build_one(ledger_rows, export_rows, "ledger2.csv", "export2.csv", template_id)
 
         duplicates = self.app.find_comparison_duplicates()
-        occ = duplicates[0]["occurrences"][0]
+        occ = next(o for o in duplicates[0]["occurrences"] if o["recommended_delete"])
 
         self.app.delete_comparison_record(occ["import_id"], occ["sheet"], occ["row_no"])
 

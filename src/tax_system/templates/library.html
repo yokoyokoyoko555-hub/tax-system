@@ -48,19 +48,21 @@
   <section class="card level-error">
     <h2>重複の可能性がある行（{{ duplicates|length }}件）</h2>
     <p class="lead">
-      同じ内容の行が複数の取込にまたがっています。同じファイルを2回取り込んだ場合などに起こります。
-      内容を確認して、不要な方を削除するか、そのまま残すか選んでください。
+      同じ内容の行が、別々の取込（ファイル）にまたがって見つかりました。同じファイルを2回
+      取り込んだ場合などに起こります（同じファイル内での重複はここには出しません）。<br>
+      取込日時が古い方に「削除推奨」を付けています。内容を確認してから削除するか、そのまま残すか選んでください。
     </p>
     {% for group in duplicates %}
     <table style="margin-bottom:1rem;">
-      <thead><tr><th>取込ID</th><th>ファイル名</th><th>シート</th><th>行</th><th></th></tr></thead>
+      <thead><tr><th>取込ID</th><th>ファイル名</th><th>シート</th><th>行</th><th>状態</th><th></th></tr></thead>
       <tbody>
         {% for occ in group.occurrences %}
-        <tr>
+        <tr class="{{ 'level-error' if occ.recommended_delete else '' }}">
           <td>{{ occ.import_id }}</td>
           <td>{{ occ.source_name }}</td>
           <td>{{ occ.sheet }}</td>
           <td>{{ occ.row_no }}</td>
+          <td>{{ "削除推奨（古い）" if occ.recommended_delete else "新しい方" }}</td>
           <td>
             <a class="button small" href="{{ url_for('records_view', import_id=occ.import_id, sheet=occ.sheet) }}">中身を見る</a>
             <form method="post" action="{{ url_for('comparison_duplicate_delete') }}" style="display:inline;">
