@@ -150,6 +150,14 @@ def _read_csv_text(source: Path) -> tuple[str, str]:
     raise ValueError(f"{source.name} の文字コードを判別できません（UTF-8・Shift-JISのいずれでもありません）")
 
 
+def _is_header_echo(values: Any, columns: list[str]) -> bool:
+    """複数回のエクスポートを1つのファイルに貼り合わせた際、ヘッダー行が
+    そのままデータ行として紛れ込むことがある（値が列名と完全に一致する行）。
+    そのようなゴミ行を検出する。
+    """
+    return list(values) == columns
+
+
 def _index_of(headers: list[Any], name: str, contains: bool = False) -> int | None:
     for index, header in enumerate(headers):
         if header is None:
@@ -270,7 +278,7 @@ class TaxSystem:
         reader = csv.DictReader(text.splitlines())
         if reader.fieldnames != LEDGER_COLUMNS:
             raise ValueError(f"古物台帳の列が既存仕様と一致しません: {reader.fieldnames}")
-        rows = list(reader)
+        rows = [row for row in reader if not _is_header_echo(row.values(), LEDGER_COLUMNS)]
         return self._save_import("ledger", source.name, sha256(source), rows, {"encoding": encoding, "columns": reader.fieldnames})
 
     def import_ledger_pos(self, source: str | Path) -> dict[str, Any]:
@@ -322,7 +330,7 @@ class TaxSystem:
             rows: list[dict[str, Any]] = []
             for values in ws.iter_rows(min_row=2, values_only=True):
                 values = values[: len(LEDGER_IDENTITY_COLUMNS)]
-                if all(v in (None, "") for v in values):
+                if all(v in (None, "") for v in values) or _is_header_echo(values, LEDGER_IDENTITY_COLUMNS):
                     continue
                 data = dict(zip(LEDGER_IDENTITY_COLUMNS, values))
                 rows.append({k: "" for k in LEDGER_COLUMNS} | {

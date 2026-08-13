@@ -86,6 +86,11 @@ def create_app(home: str | Path | None = None) -> Flask:
                         results.append({"filename": upload.filename, "ok": True, **result})
                     except ValueError as exc:
                         results.append({"filename": upload.filename, "ok": False, "error": str(exc)})
+            if any(r.get("ok") and r.get("kind") == "ledger" for r in results):
+                try:
+                    ts.auto_merge_ledger_imports()
+                except ValueError:
+                    pass  # fewer than 2 raw ledger imports exist yet — nothing to merge
             return render_template("import_result.html", results=results)
         return render_template("new_import.html")
 

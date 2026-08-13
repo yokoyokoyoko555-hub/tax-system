@@ -49,6 +49,21 @@ class LedgerTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.app.export(import_id, self.root / "blocked.csv")
         self.app.export(import_id, self.root / "preview.csv", preview=True)
 
+    def test_header_echoed_as_data_row_is_skipped(self):
+        # concatenating multiple exports into one CSV can leave a duplicate header
+        # line in the middle, which must not be imported as a real record.
+        path = self.root / "ledger.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            writer.writerow(dict(zip(LEDGER_COLUMNS, ["2026-01-01", "A", "えー", "1990-01-01", "住所A", "000", "商品A", "1", "1000", "1000", ""])))
+            writer.writerow(dict(zip(LEDGER_COLUMNS, LEDGER_COLUMNS)))  # duplicated header, no real data
+            writer.writerow(dict(zip(LEDGER_COLUMNS, ["2026-01-02", "B", "びー", "1991-01-01", "住所B", "000", "商品B", "1", "2000", "2000", ""])))
+        import_id = self.app.import_ledger(path)
+        records, total = self.app.get_records(import_id)
+        self.assertEqual(2, total)
+        self.assertNotIn("日時", [r["data"].get("日時") for r in records])
+
     def test_delete_import_removes_records(self):
         row = dict(zip(LEDGER_COLUMNS, ["2026-01-01", "テスト", "てすと", "2000-01-01", "匿名住所", "000", "商品", "2", "100", "200", ""]))
         path = self.write_csv(row)
