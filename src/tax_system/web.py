@@ -61,6 +61,8 @@ def create_app(home: str | Path | None = None) -> Flask:
             abort(404)
         ts = system()
         imports = [imp for imp in ts.list_imports() if imp["kind"] == kind]
+        if kind == "inventory":
+            imports.sort(key=lambda imp: (imp["as_of"] is None, imp["as_of"] or ""))
         merged = ts.latest_merged_ledger_import() if kind == "ledger" else None
         months = ts.month_summary(merged["id"]) if merged else []
         comparison_months = None
