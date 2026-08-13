@@ -96,6 +96,16 @@ def create_app(home: str | Path | None = None) -> Flask:
         flash("行を削除しました", "success")
         return redirect(url_for("library_view", kind="comparison"))
 
+    @app.route("/comparison-duplicates/delete-all", methods=["POST"])
+    def comparison_duplicate_delete_all():
+        ts = system()
+        count = ts.delete_recommended_comparison_duplicates()
+        if count:
+            flash(f"削除推奨（古い方）の行を{count}件まとめて削除しました", "success")
+        else:
+            flash("削除対象の重複行はありませんでした", "success")
+        return redirect(url_for("library_view", kind="comparison"))
+
     @app.route("/templates/new", methods=["GET", "POST"])
     def new_template():
         if request.method == "POST":
@@ -439,6 +449,27 @@ def create_app(home: str | Path | None = None) -> Flask:
             return redirect(url_for("index"))
         _, total = ts.get_records(import_id, limit=1)
         return render_template("delete_import.html", imp=imp, total=total)
+
+    @app.route("/imports/delete-many/confirm", methods=["POST"])
+    def delete_imports_confirm():
+        ts = system()
+        import_ids = [int(v) for v in request.form.getlist("import_ids")]
+        kind = request.form.get("kind", "")
+        imports = [imp for imp in (ts.get_import(i) for i in import_ids) if imp]
+        back_url = url_for("library_view", kind=kind) if kind in KIND_LABELS else url_for("index")
+        if not imports:
+            flash("削除する取込が選択されていません", "error")
+            return redirect(back_url)
+        return render_template("delete_imports.html", imports=imports, kind=kind, back_url=back_url)
+
+    @app.route("/imports/delete-many", methods=["POST"])
+    def delete_imports_view():
+        ts = system()
+        import_ids = [int(v) for v in request.form.getlist("import_ids")]
+        kind = request.form.get("kind", "")
+        count = ts.delete_imports(import_ids)
+        flash(f"{count}件の取込を削除しました", "success")
+        return redirect(url_for("library_view", kind=kind) if kind in KIND_LABELS else url_for("index"))
 
     @app.route("/download/<path:filename>")
     def download(filename: str):

@@ -52,6 +52,9 @@
       取り込んだ場合などに起こります（同じファイル内での重複はここには出しません）。<br>
       取込日時が古い方に「削除推奨」を付けています。内容を確認してから削除するか、そのまま残すか選んでください。
     </p>
+    <form method="post" action="{{ url_for('comparison_duplicate_delete_all') }}">
+      <button type="submit" class="button">削除推奨（古い方）をまとめて削除する</button>
+    </form>
     {% for group in duplicates %}
     <table style="margin-bottom:1rem;">
       <thead><tr><th>取込ID</th><th>ファイル名</th><th>シート</th><th>行</th><th>状態</th><th></th></tr></thead>
@@ -107,32 +110,37 @@
 <section class="card">
   <h2>{% if kind == "ledger" %}個別の取込ファイル（参考・削除用）{% else %}取込済みデータ{% endif %}</h2>
   {% if imports %}
-  <table>
-    <thead><tr><th>ID</th><th>ファイル名</th>{% if kind == "inventory" %}<th>基準年月</th>{% endif %}<th>取込日時</th><th></th></tr></thead>
-    <tbody>
-      {% for imp in imports %}
-      <tr>
-        <td>{{ imp.id }}</td>
-        <td>{{ imp.source_name }}</td>
-        {% if kind == "inventory" %}<td>{{ imp.as_of or "未指定" }}</td>{% endif %}
-        <td>{{ imp.imported_at }}</td>
-        <td>
-          <a class="button small" href="{{ url_for('records_view', import_id=imp.id) }}">中身を見る</a>
-          {% if kind != "inventory" %}
-          <a class="button small" href="{{ url_for('validate_import', import_id=imp.id) }}">チェック・出力</a>
-          {% endif %}
-          {% if kind == "ledger" %}
-          <a class="button small" href="{{ url_for('ledger_completion_view', import_id=imp.id) }}">内訳復元</a>
-          {% endif %}
-          {% if kind == "export_data" %}
-          <a class="button small" href="{{ url_for('build_comparison_view', import_id=imp.id) }}">相対表を組み立てる</a>
-          {% endif %}
-          <a class="button small" href="{{ url_for('delete_import_view', import_id=imp.id) }}">削除</a>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <form method="post" action="{{ url_for('delete_imports_confirm') }}">
+    <input type="hidden" name="kind" value="{{ kind }}">
+    <table>
+      <thead><tr><th></th><th>ID</th><th>ファイル名</th>{% if kind == "inventory" %}<th>基準年月</th>{% endif %}<th>取込日時</th><th></th></tr></thead>
+      <tbody>
+        {% for imp in imports %}
+        <tr>
+          <td><input type="checkbox" name="import_ids" value="{{ imp.id }}"></td>
+          <td>{{ imp.id }}</td>
+          <td>{{ imp.source_name }}</td>
+          {% if kind == "inventory" %}<td>{{ imp.as_of or "未指定" }}</td>{% endif %}
+          <td>{{ imp.imported_at }}</td>
+          <td>
+            <a class="button small" href="{{ url_for('records_view', import_id=imp.id) }}">中身を見る</a>
+            {% if kind != "inventory" %}
+            <a class="button small" href="{{ url_for('validate_import', import_id=imp.id) }}">チェック・出力</a>
+            {% endif %}
+            {% if kind == "ledger" %}
+            <a class="button small" href="{{ url_for('ledger_completion_view', import_id=imp.id) }}">内訳復元</a>
+            {% endif %}
+            {% if kind == "export_data" %}
+            <a class="button small" href="{{ url_for('build_comparison_view', import_id=imp.id) }}">相対表を組み立てる</a>
+            {% endif %}
+            <a class="button small" href="{{ url_for('delete_import_view', import_id=imp.id) }}">削除</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p><button type="submit" class="button small">選択した取込をまとめて削除する</button></p>
+  </form>
 
   {% if kind == "ledger" %}
   <form method="post" action="{{ url_for('ledger_merge') }}">

@@ -694,6 +694,19 @@ class TaxSystem:
                 (import_id, sheet, row_no),
             )
 
+    def delete_recommended_comparison_duplicates(self) -> int:
+        """find_comparison_duplicates() で「削除推奨（古い）」となった行をまとめて削除する。
+        件数が多いときに1件ずつ削除する手間を省くための一括操作。
+        """
+        targets = [
+            (o["import_id"], o["sheet"], o["row_no"])
+            for group in self.find_comparison_duplicates()
+            for o in group["occurrences"] if o["recommended_delete"]
+        ]
+        for import_id, sheet, row_no in targets:
+            self.delete_comparison_record(import_id, sheet, row_no)
+        return len(targets)
+
     def latest_merged_ledger_import(self) -> dict[str, Any] | None:
         with closing(self.connect()) as db, db:
             rows = db.execute(
@@ -1179,6 +1192,19 @@ class TaxSystem:
             db.execute("DELETE FROM allocations WHERE sale_import_id=?", (import_id,))
             db.execute("DELETE FROM records WHERE import_id=?", (import_id,))
             db.execute("DELETE FROM imports WHERE id=?", (import_id,))
+
+    def delete_imports(self, import_ids: list[int]) -> int:
+        """複数の取込をまとめて削除する（一覧画面でのチェックボックス選択削除用）。
+        既に無い取込IDは無視して先へ進む。実際に削除できた件数を返す。
+        """
+        count = 0
+        for import_id in import_ids:
+            try:
+                self.delete_import(import_id)
+                count += 1
+            except ValueError:
+                continue
+        return count
 
     def export_completed_ledger(self, ledger_import_id: int, output: str | Path) -> Path:
         breakdown = self.propose_ledger_breakdown(ledger_import_id)

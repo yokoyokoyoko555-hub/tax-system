@@ -790,6 +790,63 @@ class ComparisonLibraryTests(unittest.TestCase):
         _, total = self.app.get_comparison_month_records("2026-03")
         self.assertEqual(1, total)
 
+    def test_delete_recommended_comparison_duplicates_bulk(self):
+        template_id = self.register_template()
+        # two independent duplicate pairs, each spanning two imports
+        rows_x = (
+            [["2026-01-01", "Aさん", "えー", "1990-01-01", "匿名住所", "000", "カードX", "1", "1000", "1000", ""]],
+            [["2026-03-01", "カードX", "2000", "1", "2000", "海外顧客1", "銀行振込", "JPY"]],
+        )
+        rows_y = (
+            [["2026-01-01", "Bさん", "びー", "1990-01-01", "匿名住所", "000", "カードY", "1", "1500", "1500", ""]],
+            [["2026-03-02", "カードY", "2500", "1", "2500", "海外顧客2", "銀行振込", "JPY"]],
+        )
+        self.build_one(rows_x[0], rows_x[1], "ledgerx1.csv", "exportx1.csv", template_id)
+        self.build_one(rows_x[0], rows_x[1], "ledgerx2.csv", "exportx2.csv", template_id)
+        self.build_one(rows_y[0], rows_y[1], "ledgery1.csv", "exporty1.csv", template_id)
+        self.build_one(rows_y[0], rows_y[1], "ledgery2.csv", "exporty2.csv", template_id)
+
+        self.assertEqual(2, len(self.app.find_comparison_duplicates()))
+
+        deleted = self.app.delete_recommended_comparison_duplicates()
+
+        self.assertEqual(2, deleted)
+        self.assertEqual([], self.app.find_comparison_duplicates())
+        _, total_x = self.app.get_comparison_month_records("2026-03")
+        self.assertEqual(2, total_x)
+
+
+class DeleteImportsTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.app = TaxSystem(self.root / "runtime")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_ledger(self, name):
+        path = self.root / name
+        row = dict(zip(LEDGER_COLUMNS, [
+            "2026-01-01", "テスト", "てすと", "2000-01-01", "匿名住所", "000", "商品", "1", "100", "100", "",
+        ]))
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n")
+            writer.writeheader(); writer.writerow(row)
+        return path
+
+    def test_delete_imports_removes_selected_and_skips_missing(self):
+        id1 = self.app.import_ledger(self.write_ledger("l1.csv"))
+        id2 = self.app.import_ledger(self.write_ledger("l2.csv"))
+        id3 = self.app.import_ledger(self.write_ledger("l3.csv"))
+
+        count = self.app.delete_imports([id1, id2, 99999])
+
+        self.assertEqual(2, count)
+        self.assertIsNone(self.app.get_import(id1))
+        self.assertIsNone(self.app.get_import(id2))
+        self.assertIsNotNone(self.app.get_import(id3))
+
 
 if __name__ == "__main__": unittest.main()
 

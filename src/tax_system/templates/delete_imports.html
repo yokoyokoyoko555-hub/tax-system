@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}取込の一括削除{% endblock %}
+{% block content %}
+<h1>選択した{{ imports|length }}件の取込を削除しますか？</h1>
+
+<section class="card level-error">
+  <table>
+    <thead><tr><th>ID</th><th>種類</th><th>ファイル名</th><th>取込日時</th></tr></thead>
+    <tbody>
+      {% for imp in imports %}
+      <tr>
+        <td>{{ imp.id }}</td>
+        <td>{{ kind_labels[imp.kind] }}</td>
+        <td>{{ imp.source_name }}</td>
+        <td>{{ imp.imported_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">
+    これらの取込のデータ・内訳・仕入対応を削除します。元に戻せません。
+  </p>
+  <form method="post" action="{{ url_for('delete_imports_view') }}">
+    <input type="hidden" name="kind" value="{{ kind }}">
+    {% for imp in imports %}
+    <input type="hidden" name="import_ids" value="{{ imp.id }}">
+    {% endfor %}
+    <button type="submit" class="button">削除する</button>
+  </form>
+</section>
+
+<p class="muted"><a href="{{ back_url }}">← 削除せず戻る</a></p>
+{% endblock %}
