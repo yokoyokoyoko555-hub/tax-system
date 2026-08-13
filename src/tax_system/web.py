@@ -184,11 +184,18 @@ def create_app(home: str | Path | None = None) -> Flask:
             for row in rows:
                 row["cells"] = [v for h, v in zip(headers, row["data"]["values"]) if h]
         total_pages = max(1, -(-total // per_page))
+        sibling_imports = []
+        if imp["kind"] == "comparison":
+            sibling_imports = sorted(
+                (i for i in ts.list_imports() if i["kind"] == "comparison"), key=lambda i: i["id"]
+            )
+            for i in sibling_imports:
+                i["label"] = Path(i["source_name"]).stem
         return render_template(
             "records.html", imp=imp, rows=rows, headers=display_headers,
             flat_columns=FLAT_COLUMNS.get(imp["kind"]),
             sheets=sheets, sheet=sheet, months=months, month=month,
-            sort=sort, sort_dir=sort_dir,
+            sort=sort, sort_dir=sort_dir, sibling_imports=sibling_imports,
             page=page, total=total, total_pages=total_pages,
         )
 

@@ -8,6 +8,20 @@
   {% if sort %} ｜ <a href="{{ url_for('records_view', import_id=imp.id, sheet=sheet, month=month) }}">並び替えを解除（取込順に戻す）</a>{% endif %}
 </p>
 
+{% if sibling_imports|length > 1 %}
+<p>
+  ファイル:
+  {% for si in sibling_imports %}
+    {% if si.id == imp.id %}
+      <strong>{{ si.label }}</strong>
+    {% else %}
+      <a href="{{ url_for('records_view', import_id=si.id, sheet=sheet, month=month) }}">{{ si.label }}</a>
+    {% endif %}
+    {% if not loop.last %} | {% endif %}
+  {% endfor %}
+</p>
+{% endif %}
+
 {% if sheets %}
 <p>
   {% for s in sheets %}
