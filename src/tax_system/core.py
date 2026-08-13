@@ -380,6 +380,29 @@ class TaxSystem:
         rows = list(reader)
         return self._save_import("inventory", source.name, sha256(source), rows, {"encoding": encoding, "columns": reader.fieldnames})
 
+    def import_inventory_products(self, source: str | Path) -> dict[str, Any]:
+        """ECサイトの商品CSV（商品番号・写真・SEO設定など多数の列を含む商品マスタ）から、
+        商品名・仕入・在庫数の3列だけを抜き出して期末在庫表として取り込む。
+        """
+        self.initialize()
+        source = Path(source).resolve(strict=True)
+        text, encoding = _read_csv_text(source)
+        reader = csv.DictReader(text.splitlines())
+        required = {"商品名", "在庫数", "仕入"}
+        if not reader.fieldnames or not required.issubset(reader.fieldnames):
+            raise ValueError(f"商品CSVの列に「商品名」「在庫数」「仕入」が見つかりません: {reader.fieldnames}")
+        rows: list[dict[str, Any]] = []
+        for row in reader:
+            product = (row.get("商品名") or "").strip()
+            if not product:
+                continue
+            rows.append({"商品名": product, "仕入れ原価": row.get("仕入", ""), "在庫数": row.get("在庫数", "")})
+        import_id = self._save_import(
+            "inventory", source.name, sha256(source), rows,
+            {"encoding": encoding, "source_format": "ec_products_csv"},
+        )
+        return {"import_id": import_id, "imported": len(rows)}
+
     def import_export_data(self, source: str | Path) -> int:
         self.initialize()
         source = Path(source).resolve(strict=True)
@@ -402,6 +425,7 @@ class TaxSystem:
                 ("古物台帳", lambda: {"kind": "ledger", "import_id": self.import_ledger(source)}),
                 ("古物台帳（POS取引データ）", lambda: {"kind": "ledger", **self.import_ledger_pos(source)}),
                 ("期末在庫表", lambda: {"kind": "inventory", "import_id": self.import_inventory(source)}),
+                ("期末在庫表（ECサイト商品CSV）", lambda: {"kind": "inventory", **self.import_inventory_products(source)}),
                 ("輸出データ", lambda: {"kind": "export_data", "import_id": self.import_export_data(source)}),
             ]
         elif suffix == ".xlsx":

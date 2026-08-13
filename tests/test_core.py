@@ -423,6 +423,18 @@ class AutoImportTests(unittest.TestCase):
         result = self.app.import_auto(path)
         self.assertEqual("ledger", result["kind"])
 
+    def test_ec_product_csv_extracts_relevant_columns(self):
+        columns = ["商品番号", "商品名", "型番/品番", "JANコード", "カテゴリ", "サブカテゴリ",
+                   "グループ", "販売価格", "在庫数", "仕入", "重量"]
+        path = self.write_csv(columns, [
+            ["155", "テストカード", "", "", "CAT", "SUB", "", "10800", "2", "8640", ""],
+        ], "products_棚卸用.csv")
+        result = self.app.import_auto(path)
+        self.assertEqual("inventory", result["kind"])
+        records, total = self.app.get_records(result["import_id"])
+        self.assertEqual(1, total)
+        self.assertEqual({"商品名": "テストカード", "仕入れ原価": "8640", "在庫数": "2"}, records[0]["data"])
+
     def test_unrecognized_csv_raises(self):
         path = self.write_csv(["列A", "列B"], [["1", "2"]], "unknown5.csv")
         with self.assertRaises(ValueError):
