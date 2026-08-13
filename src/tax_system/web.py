@@ -44,7 +44,9 @@ def create_app(home: str | Path | None = None) -> Flask:
             abort(404)
         ts = system()
         imports = [imp for imp in ts.list_imports() if imp["kind"] == kind]
-        return render_template("library.html", kind=kind, imports=imports)
+        merged = ts.latest_merged_ledger_import() if kind == "ledger" else None
+        months = ts.month_summary(merged["id"]) if merged else []
+        return render_template("library.html", kind=kind, imports=imports, merged=merged, months=months)
 
     @app.route("/templates/new", methods=["GET", "POST"])
     def new_template():

@@ -529,6 +529,9 @@ class TaxSystem:
         return results, total
 
     def list_months(self, import_id: int) -> list[str]:
+        return [entry["month"] for entry in self.month_summary(import_id)]
+
+    def month_summary(self, import_id: int) -> list[dict[str, Any]]:
         with closing(self.connect()) as db, db:
             imp = db.execute("SELECT kind, metadata_json FROM imports WHERE id=?", (import_id,)).fetchone()
             if not imp:
@@ -539,12 +542,22 @@ class TaxSystem:
         if kind == "comparison":
             metadata = json.loads(imp["metadata_json"])
             sheet_headers = {s["name"]: s["headers"] for s in metadata.get("sheets", [])}
-        months: set[str] = set()
+        counts: dict[str, int] = {}
         for row in rows:
             m = self._record_month(kind, json.loads(row["data_json"]), sheet_headers)
             if m:
-                months.add(m)
-        return sorted(months)
+                counts[m] = counts.get(m, 0) + 1
+        return [{"month": m, "count": counts[m]} for m in sorted(counts)]
+
+    def latest_merged_ledger_import(self) -> dict[str, Any] | None:
+        with closing(self.connect()) as db, db:
+            rows = db.execute(
+                "SELECT id, metadata_json FROM imports WHERE kind='ledger' ORDER BY id DESC"
+            ).fetchall()
+        for row in rows:
+            if json.loads(row["metadata_json"]).get("source_format") == "merged":
+                return self.get_import(row["id"])
+        return None
 
     def list_exports(self) -> list[dict[str, Any]]:
         with closing(self.connect()) as db, db:

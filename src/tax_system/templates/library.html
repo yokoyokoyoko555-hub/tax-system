@@ -3,43 +3,75 @@
 {% block content %}
 <h1>{{ kind_labels[kind] }}</h1>
 
-{% if imports %}
-<table>
-  <thead><tr><th>ID</th><th>ファイル名</th><th>取込日時</th><th></th></tr></thead>
-  <tbody>
-    {% for imp in imports %}
-    <tr>
-      <td>{{ imp.id }}</td>
-      <td>{{ imp.source_name }}</td>
-      <td>{{ imp.imported_at }}</td>
-      <td>
-        <a class="button small" href="{{ url_for('records_view', import_id=imp.id) }}">中身を見る</a>
-        {% if kind != "inventory" %}
-        <a class="button small" href="{{ url_for('validate_import', import_id=imp.id) }}">チェック・出力</a>
-        {% endif %}
-        {% if kind == "ledger" %}
-        <a class="button small" href="{{ url_for('ledger_completion_view', import_id=imp.id) }}">内訳復元</a>
-        {% endif %}
-        {% if kind == "export_data" %}
-        <a class="button small" href="{{ url_for('build_comparison_view', import_id=imp.id) }}">相対表を組み立てる</a>
-        {% endif %}
-        <a class="button small" href="{{ url_for('delete_import_view', import_id=imp.id) }}">削除</a>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-
 {% if kind == "ledger" %}
-<form method="post" action="{{ url_for('ledger_merge') }}">
-  <p>
-    <button type="submit" class="button small">未結合の古物台帳をすべて結合する</button>
-    <span class="muted">日時・氏名などから自動で結合します。どれを選ぶかは指定不要です。</span>
+  {% if merged and months %}
+  <section class="card">
+    <h2>月ごとに見る</h2>
+    <p class="lead">結合済みの古物台帳（取込ID {{ merged.id }}）から、月ごとの件数です。クリックするとその月の中身を表示します。</p>
+    <table>
+      <thead><tr><th>年月</th><th>件数</th><th></th></tr></thead>
+      <tbody>
+        {% for m in months %}
+        <tr>
+          <td>{{ m.month }}</td>
+          <td>{{ m.count }}件</td>
+          <td><a class="button small" href="{{ url_for('records_view', import_id=merged.id, month=m.month) }}">この月を見る</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p>
+      <a class="button small" href="{{ url_for('ledger_completion_view', import_id=merged.id) }}">内訳復元</a>
+      <a class="button small" href="{{ url_for('validate_import', import_id=merged.id) }}">チェック・出力</a>
+    </p>
+  </section>
+  {% else %}
+  <p class="muted">
+    まだ結合済みの古物台帳がありません。古物台帳を2件以上取り込むと、自動で結合されて月ごとに表示されます。
   </p>
-</form>
+  {% endif %}
 {% endif %}
 
-{% else %}
-<p class="muted">まだ{{ kind_labels[kind] }}が取り込まれていません。<a href="{{ url_for('new_import') }}">取り込む →</a></p>
-{% endif %}
+<section class="card">
+  <h2>{% if kind == "ledger" %}個別の取込ファイル（参考・削除用）{% else %}取込済みデータ{% endif %}</h2>
+  {% if imports %}
+  <table>
+    <thead><tr><th>ID</th><th>ファイル名</th><th>取込日時</th><th></th></tr></thead>
+    <tbody>
+      {% for imp in imports %}
+      <tr>
+        <td>{{ imp.id }}</td>
+        <td>{{ imp.source_name }}</td>
+        <td>{{ imp.imported_at }}</td>
+        <td>
+          <a class="button small" href="{{ url_for('records_view', import_id=imp.id) }}">中身を見る</a>
+          {% if kind != "inventory" %}
+          <a class="button small" href="{{ url_for('validate_import', import_id=imp.id) }}">チェック・出力</a>
+          {% endif %}
+          {% if kind == "ledger" %}
+          <a class="button small" href="{{ url_for('ledger_completion_view', import_id=imp.id) }}">内訳復元</a>
+          {% endif %}
+          {% if kind == "export_data" %}
+          <a class="button small" href="{{ url_for('build_comparison_view', import_id=imp.id) }}">相対表を組み立てる</a>
+          {% endif %}
+          <a class="button small" href="{{ url_for('delete_import_view', import_id=imp.id) }}">削除</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if kind == "ledger" %}
+  <form method="post" action="{{ url_for('ledger_merge') }}">
+    <p>
+      <button type="submit" class="button small">未結合の古物台帳をすべて結合する</button>
+      <span class="muted">通常は取込時に自動で結合されます。ファイルを削除した後など、手動でやり直したいときにお使いください。</span>
+    </p>
+  </form>
+  {% endif %}
+
+  {% else %}
+  <p class="muted">まだ{{ kind_labels[kind] }}が取り込まれていません。<a href="{{ url_for('new_import') }}">取り込む →</a></p>
+  {% endif %}
+</section>
 {% endblock %}
