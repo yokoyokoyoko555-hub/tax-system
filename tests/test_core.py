@@ -49,6 +49,23 @@ class LedgerTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.app.export(import_id, self.root / "blocked.csv")
         self.app.export(import_id, self.root / "preview.csv", preview=True)
 
+    def test_get_records_sorts_by_numeric_column(self):
+        path = self.root / "ledger.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            for amount in (300, 100, 200):
+                writer.writerow(dict(zip(LEDGER_COLUMNS, [
+                    "2026-01-01", f"名前{amount}", "", "", "住所", "000", "商品", "1", str(amount), str(amount), "",
+                ])))
+        import_id = self.app.import_ledger(path)
+
+        asc, total = self.app.get_records(import_id, sort="金額", sort_dir="asc")
+        self.assertEqual(["100", "200", "300"], [r["data"]["金額"] for r in asc])
+
+        desc, _ = self.app.get_records(import_id, sort="金額", sort_dir="desc")
+        self.assertEqual(["300", "200", "100"], [r["data"]["金額"] for r in desc])
+
     def test_header_echoed_as_data_row_is_skipped(self):
         # concatenating multiple exports into one CSV can leave a duplicate header
         # line in the middle, which must not be imported as a real record.
@@ -433,7 +450,10 @@ class AutoImportTests(unittest.TestCase):
         self.assertEqual("inventory", result["kind"])
         records, total = self.app.get_records(result["import_id"])
         self.assertEqual(1, total)
-        self.assertEqual({"商品名": "テストカード", "仕入れ原価": "8640", "在庫数": "2"}, records[0]["data"])
+        self.assertEqual({
+            "商品名": "テストカード", "仕入れ原価": "8640", "在庫数": "2",
+            "カテゴリ": "CAT", "サブカテゴリ": "SUB", "グループ": "", "販売価格": "10800",
+        }, records[0]["data"])
 
     def test_unrecognized_csv_raises(self):
         path = self.write_csv(["列A", "列B"], [["1", "2"]], "unknown5.csv")

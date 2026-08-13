@@ -9,10 +9,11 @@ from pathlib import Path
 from flask import Flask, abort, flash, redirect, render_template, request, send_file, session, url_for
 from werkzeug.utils import secure_filename
 
-from .core import EXPORT_DATA_COLUMNS, INVENTORY_COLUMNS, LEDGER_COLUMNS, TaxSystem, translate_ja_to_en
+from .core import EXPORT_DATA_COLUMNS, LEDGER_COLUMNS, TaxSystem, translate_ja_to_en
 
 KIND_LABELS = {"ledger": "古物台帳", "comparison": "相対表", "inventory": "期末在庫表", "export_data": "輸出データ"}
-FLAT_COLUMNS = {"ledger": LEDGER_COLUMNS, "inventory": INVENTORY_COLUMNS, "export_data": EXPORT_DATA_COLUMNS}
+INVENTORY_DISPLAY_COLUMNS = ["商品名", "カテゴリ", "サブカテゴリ", "グループ", "仕入れ原価", "販売価格", "在庫数"]
+FLAT_COLUMNS = {"ledger": LEDGER_COLUMNS, "inventory": INVENTORY_DISPLAY_COLUMNS, "export_data": EXPORT_DATA_COLUMNS}
 
 OUTPUT_DIR = Path("outputs").resolve()
 
@@ -121,7 +122,12 @@ def create_app(home: str | Path | None = None) -> Flask:
         month = request.args.get("month") if months else None
         if months and month not in months:
             month = months[-1]
-        rows, total = ts.get_records(import_id, sheet=sheet, month=month, offset=(page - 1) * per_page, limit=per_page)
+        sort = request.args.get("sort") or None
+        sort_dir = "desc" if request.args.get("dir") == "desc" else "asc"
+        rows, total = ts.get_records(
+            import_id, sheet=sheet, month=month, sort=sort, sort_dir=sort_dir,
+            offset=(page - 1) * per_page, limit=per_page,
+        )
         headers = next((s["headers"] for s in imp["metadata"].get("sheets", []) if s["name"] == sheet), None)
         display_headers = [h for h in headers if h] if headers else None
         if display_headers is not None:
@@ -132,6 +138,7 @@ def create_app(home: str | Path | None = None) -> Flask:
             "records.html", imp=imp, rows=rows, headers=display_headers,
             flat_columns=FLAT_COLUMNS.get(imp["kind"]),
             sheets=sheets, sheet=sheet, months=months, month=month,
+            sort=sort, sort_dir=sort_dir,
             page=page, total=total, total_pages=total_pages,
         )
 

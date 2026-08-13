@@ -399,7 +399,11 @@ class TaxSystem:
             product = (row.get("商品名") or "").strip()
             if not product:
                 continue
-            rows.append({"商品名": product, "仕入れ原価": row.get("仕入", ""), "在庫数": row.get("在庫数", "")})
+            rows.append({
+                "商品名": product, "仕入れ原価": row.get("仕入", ""), "在庫数": row.get("在庫数", ""),
+                "カテゴリ": row.get("カテゴリ", ""), "サブカテゴリ": row.get("サブカテゴリ", ""),
+                "グループ": row.get("グループ", ""), "販売価格": row.get("販売価格", ""),
+            })
         import_id = self._save_import(
             "inventory", source.name, sha256(source), rows,
             {"encoding": encoding, "source_format": "ec_products_csv"},
@@ -516,44 +520,55 @@ class TaxSystem:
         return f"{d.year:04d}-{d.month:02d}" if d else None
 
     def get_records(self, import_id: int, sheet: str | None = None, month: str | None = None,
+                    sort: str | None = None, sort_dir: str = "asc",
                     offset: int = 0, limit: int = 100) -> tuple[list[dict[str, Any]], int]:
         where = "import_id=?"
         params: list[Any] = [import_id]
         if sheet is not None:
             where += " AND sheet_name=?"
             params.append(sheet)
-        if month is not None:
-            # month filtering inspects the JSON date field, so it can't be pushed into SQL;
-            # fetch everything for the import and filter/paginate in Python instead.
+        if month is None and sort is None:
             with closing(self.connect()) as db, db:
-                imp = db.execute("SELECT kind, metadata_json FROM imports WHERE id=?", (import_id,)).fetchone()
+                total = db.execute(f"SELECT COUNT(*) FROM records WHERE {where}", params).fetchone()[0]
                 rows = db.execute(
-                    f"SELECT * FROM records WHERE {where} ORDER BY sheet_name, row_no", params
+                    f"SELECT * FROM records WHERE {where} ORDER BY sheet_name, row_no LIMIT ? OFFSET ?",
+                    params + [limit, offset],
                 ).fetchall()
-            kind = imp["kind"] if imp else ""
-            sheet_headers = None
-            if kind == "comparison" and imp:
-                metadata = json.loads(imp["metadata_json"])
-                sheet_headers = {s["name"]: s["headers"] for s in metadata.get("sheets", [])}
             results = []
             for row in rows:
                 item = dict(row)
                 item["data"] = json.loads(item.pop("data_json"))
-                if self._record_month(kind, item["data"], sheet_headers) == month:
-                    results.append(item)
-            return results[offset:offset + limit], len(results)
+                results.append(item)
+            return results, total
+
+        # month filtering / sorting inspect the JSON data, so they can't be pushed into SQL;
+        # fetch everything for the import and filter/sort/paginate in Python instead.
         with closing(self.connect()) as db, db:
-            total = db.execute(f"SELECT COUNT(*) FROM records WHERE {where}", params).fetchone()[0]
+            imp = db.execute("SELECT kind, metadata_json FROM imports WHERE id=?", (import_id,)).fetchone()
             rows = db.execute(
-                f"SELECT * FROM records WHERE {where} ORDER BY sheet_name, row_no LIMIT ? OFFSET ?",
-                params + [limit, offset],
+                f"SELECT * FROM records WHERE {where} ORDER BY sheet_name, row_no", params
             ).fetchall()
+        kind = imp["kind"] if imp else ""
+        sheet_headers = None
+        if kind == "comparison" and imp:
+            metadata = json.loads(imp["metadata_json"])
+            sheet_headers = {s["name"]: s["headers"] for s in metadata.get("sheets", [])}
         results = []
         for row in rows:
             item = dict(row)
             item["data"] = json.loads(item.pop("data_json"))
+            if month is not None and self._record_month(kind, item["data"], sheet_headers) != month:
+                continue
             results.append(item)
-        return results, total
+        if sort is not None:
+            def sort_key(item: dict[str, Any]) -> tuple[int, Any]:
+                value = item["data"].get(sort)
+                number = _to_number(value)
+                if number is not None:
+                    return (0, number)
+                return (1, str(value) if value is not None else "")
+            results.sort(key=sort_key, reverse=(sort_dir == "desc"))
+        return results[offset:offset + limit], len(results)
 
     def list_months(self, import_id: int) -> list[str]:
         return [entry["month"] for entry in self.month_summary(import_id)]

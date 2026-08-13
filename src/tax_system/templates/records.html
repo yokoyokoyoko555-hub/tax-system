@@ -5,6 +5,7 @@
 <p class="lead">
   取込ID {{ imp.id }}（{{ kind_labels[imp.kind] }} / {{ imp.source_name }} / {{ imp.imported_at }}）<br>
   全 {{ total }} 件
+  {% if sort %} ｜ <a href="{{ url_for('records_view', import_id=imp.id, sheet=sheet, month=month) }}">並び替えを解除（取込順に戻す）</a>{% endif %}
 </p>
 
 {% if sheets %}
@@ -40,7 +41,17 @@
       <tr>
         <th>行</th>
         {% if flat_columns %}
-          {% for col in flat_columns %}<th>{{ col }}</th>{% endfor %}
+          {% for col in flat_columns %}
+          <th>
+            {% if sort == col %}
+              <a href="{{ url_for('records_view', import_id=imp.id, sheet=sheet, month=month, sort=col, dir='desc' if sort_dir == 'asc' else 'asc') }}">
+                {{ col }} {{ '▲' if sort_dir == 'asc' else '▼' }}
+              </a>
+            {% else %}
+              <a href="{{ url_for('records_view', import_id=imp.id, sheet=sheet, month=month, sort=col, dir='asc') }}">{{ col }}</a>
+            {% endif %}
+          </th>
+          {% endfor %}
         {% else %}
           {% for h in headers %}<th>{{ h }}</th>{% endfor %}
         {% endif %}
@@ -63,9 +74,9 @@
 
 {% if total_pages > 1 %}
 <p class="muted">
-  {% if page > 1 %}<a href="{{ url_for('records_view', import_id=imp.id, sheet=sheet, month=month, page=page-1) }}">← 前へ</a>{% endif %}
+  {% if page > 1 %}<a href="{{ url_for('records_view', import_id=imp.id, sheet=sheet, month=month, sort=sort, dir=sort_dir, page=page-1) }}">← 前へ</a>{% endif %}
   {{ page }} / {{ total_pages }} ページ
-  {% if page < total_pages %}<a href="{{ url_for('records_view', import_id=imp.id, sheet=sheet, month=month, page=page+1) }}">次へ →</a>{% endif %}
+  {% if page < total_pages %}<a href="{{ url_for('records_view', import_id=imp.id, sheet=sheet, month=month, sort=sort, dir=sort_dir, page=page+1) }}">次へ →</a>{% endif %}
 </p>
 {% endif %}
 
