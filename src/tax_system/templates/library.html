@@ -42,16 +42,50 @@
   {% endif %}
 {% endif %}
 
+{% if kind == "comparison" %}
+  {% if comparison_months %}
+  <section class="card">
+    <h2>月ごとに見る（販売日基準）</h2>
+    <p class="lead">
+      相対表は古物台帳と違って自動結合していないため、取込ごとに月の内訳を表示しています。
+      年月は払出し側（販売）の年月日で区切っています。
+    </p>
+    {% for entry in comparison_months %}
+      <h3 style="font-size:1rem;">取込ID {{ entry.import_id }}（{{ entry.source_name }}）</h3>
+      {% if entry.months %}
+      <table>
+        <thead><tr><th>年月</th><th>件数</th><th></th></tr></thead>
+        <tbody>
+          {% for m in entry.months %}
+          <tr>
+            <td>{{ m.month }}</td>
+            <td>{{ m.count }}件</td>
+            <td><a class="button small" href="{{ url_for('records_view', import_id=entry.import_id, month=m.month) }}">この月を見る</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="muted">年月日を判定できる行がありません。</p>
+      {% endif %}
+    {% endfor %}
+  </section>
+  {% else %}
+  <p class="muted">まだ相対表が取り込まれていません。</p>
+  {% endif %}
+{% endif %}
+
 <section class="card">
   <h2>{% if kind == "ledger" %}個別の取込ファイル（参考・削除用）{% else %}取込済みデータ{% endif %}</h2>
   {% if imports %}
   <table>
-    <thead><tr><th>ID</th><th>ファイル名</th><th>取込日時</th><th></th></tr></thead>
+    <thead><tr><th>ID</th><th>ファイル名</th>{% if kind == "inventory" %}<th>基準年月</th>{% endif %}<th>取込日時</th><th></th></tr></thead>
     <tbody>
       {% for imp in imports %}
       <tr>
         <td>{{ imp.id }}</td>
         <td>{{ imp.source_name }}</td>
+        {% if kind == "inventory" %}<td>{{ imp.as_of or "未指定" }}</td>{% endif %}
         <td>{{ imp.imported_at }}</td>
         <td>
           <a class="button small" href="{{ url_for('records_view', import_id=imp.id) }}">中身を見る</a>

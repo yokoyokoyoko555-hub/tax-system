@@ -47,7 +47,16 @@ def create_app(home: str | Path | None = None) -> Flask:
         imports = [imp for imp in ts.list_imports() if imp["kind"] == kind]
         merged = ts.latest_merged_ledger_import() if kind == "ledger" else None
         months = ts.month_summary(merged["id"]) if merged else []
-        return render_template("library.html", kind=kind, imports=imports, merged=merged, months=months)
+        comparison_months = None
+        if kind == "comparison":
+            comparison_months = [
+                {"import_id": imp["id"], "source_name": imp["source_name"], "months": ts.month_summary(imp["id"])}
+                for imp in imports
+            ]
+        return render_template(
+            "library.html", kind=kind, imports=imports, merged=merged, months=months,
+            comparison_months=comparison_months,
+        )
 
     @app.route("/templates/new", methods=["GET", "POST"])
     def new_template():
@@ -79,13 +88,14 @@ def create_app(home: str | Path | None = None) -> Flask:
                 flash("ファイルを選択してください", "error")
                 return redirect(url_for("new_import"))
             ts = system()
+            inventory_as_of = request.form.get("inventory_as_of") or None
             results = []
             with tempfile.TemporaryDirectory() as tmp:
                 for upload in uploads:
                     path = Path(tmp) / secure_filename(upload.filename)
                     upload.save(path)
                     try:
-                        result = ts.import_auto(path)
+                        result = ts.import_auto(path, inventory_as_of=inventory_as_of)
                         results.append({"filename": upload.filename, "ok": True, **result})
                     except ValueError as exc:
                         results.append({"filename": upload.filename, "ok": False, "error": str(exc)})

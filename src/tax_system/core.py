@@ -125,7 +125,7 @@ def _to_date(value: Any) -> date | None:
         return value.date()
     if isinstance(value, date):
         return value
-    match = re.match(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", str(value).strip())
+    match = re.match(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", str(value).strip())
     if not match:
         return None
     year, month, day = (int(part) for part in match.groups())
@@ -373,7 +373,7 @@ class TaxSystem:
                 records.append({"sheet": ws.title, "row_no": row_no, "values": values})
         return self._save_import("comparison", source.name, sha256(source), records, {"sheets": sheets})
 
-    def import_inventory(self, source: str | Path) -> int:
+    def import_inventory(self, source: str | Path, as_of: str | None = None) -> int:
         self.initialize()
         source = Path(source).resolve(strict=True)
         text, encoding = _read_csv_text(source)
@@ -381,11 +381,15 @@ class TaxSystem:
         if reader.fieldnames != INVENTORY_COLUMNS:
             raise ValueError(f"期末在庫表の列が想定と一致しません（{INVENTORY_COLUMNS}）: {reader.fieldnames}")
         rows = list(reader)
-        return self._save_import("inventory", source.name, sha256(source), rows, {"encoding": encoding, "columns": reader.fieldnames})
+        return self._save_import(
+            "inventory", source.name, sha256(source), rows,
+            {"encoding": encoding, "columns": reader.fieldnames, "as_of": as_of},
+        )
 
-    def import_inventory_products(self, source: str | Path) -> dict[str, Any]:
+    def import_inventory_products(self, source: str | Path, as_of: str | None = None) -> dict[str, Any]:
         """ECサイトの商品CSV（商品番号・写真・SEO設定など多数の列を含む商品マスタ）から、
         商品名・仕入・在庫数の3列だけを抜き出して期末在庫表として取り込む。
+        as_of（例: "2026-04"）は、この在庫表がいつ時点のものかを示す基準年月。
         """
         self.initialize()
         source = Path(source).resolve(strict=True)
@@ -406,7 +410,7 @@ class TaxSystem:
             })
         import_id = self._save_import(
             "inventory", source.name, sha256(source), rows,
-            {"encoding": encoding, "source_format": "ec_products_csv"},
+            {"encoding": encoding, "source_format": "ec_products_csv", "as_of": as_of},
         )
         return {"import_id": import_id, "imported": len(rows)}
 
@@ -420,10 +424,11 @@ class TaxSystem:
         rows = list(reader)
         return self._save_import("export_data", source.name, sha256(source), rows, {"encoding": encoding, "columns": reader.fieldnames})
 
-    def import_auto(self, source: str | Path) -> dict[str, Any]:
+    def import_auto(self, source: str | Path, inventory_as_of: str | None = None) -> dict[str, Any]:
         """ファイルの拡張子と列構成から種類を自動判定して取り込む（一括取込用）。
         各形式の列は互いに重ならないため、既存の取込処理を順番に試し、
-        列が一致したものをそのまま採用する。
+        列が一致したものをそのまま採用する。inventory_as_of は期末在庫表と判定された
+        場合にのみ使われる基準年月（例: "2026-04"）。
         """
         source = Path(source).resolve(strict=True)
         suffix = source.suffix.lower()
@@ -431,8 +436,8 @@ class TaxSystem:
             candidates: list[tuple[str, Any]] = [
                 ("古物台帳", lambda: {"kind": "ledger", "import_id": self.import_ledger(source)}),
                 ("古物台帳（POS取引データ）", lambda: {"kind": "ledger", **self.import_ledger_pos(source)}),
-                ("期末在庫表", lambda: {"kind": "inventory", "import_id": self.import_inventory(source)}),
-                ("期末在庫表（ECサイト商品CSV）", lambda: {"kind": "inventory", **self.import_inventory_products(source)}),
+                ("期末在庫表", lambda: {"kind": "inventory", "import_id": self.import_inventory(source, inventory_as_of)}),
+                ("期末在庫表（ECサイト商品CSV）", lambda: {"kind": "inventory", **self.import_inventory_products(source, inventory_as_of)}),
                 ("輸出データ", lambda: {"kind": "export_data", "import_id": self.import_export_data(source)}),
             ]
         elif suffix == ".xlsx":
@@ -488,9 +493,14 @@ class TaxSystem:
     def list_imports(self) -> list[dict[str, Any]]:
         with closing(self.connect()) as db, db:
             rows = db.execute(
-                "SELECT id, kind, source_name, imported_at FROM imports ORDER BY id DESC"
+                "SELECT id, kind, source_name, imported_at, metadata_json FROM imports ORDER BY id DESC"
             ).fetchall()
-        return [dict(row) for row in rows]
+        results = []
+        for row in rows:
+            item = dict(row)
+            item["as_of"] = json.loads(item.pop("metadata_json")).get("as_of")
+            results.append(item)
+        return results
 
     def get_import(self, import_id: int) -> dict[str, Any] | None:
         with closing(self.connect()) as db, db:
@@ -890,11 +900,17 @@ class TaxSystem:
 
     def _latest_inventory(self) -> dict[str, float]:
         with closing(self.connect()) as db, db:
-            imp = db.execute(
-                "SELECT id FROM imports WHERE kind='inventory' ORDER BY imported_at DESC LIMIT 1"
-            ).fetchone()
-            if not imp:
+            imps = db.execute(
+                "SELECT id, imported_at, metadata_json FROM imports WHERE kind='inventory'"
+            ).fetchall()
+            if not imps:
                 return {}
+            # prefer the snapshot with the latest 基準年月 (as_of); imports without one
+            # sort before those with one, so an as_of always wins over a bare upload time.
+            def sort_key(row: sqlite3.Row) -> tuple[Any, ...]:
+                as_of = json.loads(row["metadata_json"]).get("as_of")
+                return (as_of is not None, as_of or "", row["imported_at"])
+            imp = max(imps, key=sort_key)
             rows = db.execute("SELECT data_json FROM records WHERE import_id=?", (imp["id"],)).fetchall()
         costs: dict[str, float] = {}
         for row in rows:

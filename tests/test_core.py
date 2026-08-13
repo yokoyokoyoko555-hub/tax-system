@@ -15,6 +15,7 @@ from tax_system.core import (
     LEDGER_IDENTITY_COLUMNS,
     LEDGER_POS_COLUMNS,
     TaxSystem,
+    _to_date,
     suggest_ledger_items,
 )
 
@@ -229,6 +230,24 @@ class LedgerCompletionTests(unittest.TestCase):
         path = self.root / name
         wb.save(path)
         return path
+
+    def test_latest_inventory_prefers_later_as_of_over_upload_order(self):
+        path1 = self.root / "inv_may.csv"
+        with path1.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=INVENTORY_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            writer.writerow({"商品名": "テストカードA", "仕入れ原価": "9999", "在庫数": "1"})
+        self.app.import_inventory(path1, as_of="2026-05")
+
+        # uploaded second (higher id / later imported_at) but represents an EARLIER period
+        path2 = self.root / "inv_april.csv"
+        with path2.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=INVENTORY_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            writer.writerow({"商品名": "テストカードA", "仕入れ原価": "1111", "在庫数": "1"})
+        self.app.import_inventory(path2, as_of="2026-04")
+
+        self.assertEqual(9999, self.app._latest_inventory()["テストカードA"])
 
     def test_breakdown_uses_comparison_and_manual_fill(self):
         self.app.import_inventory(self.write_inventory())
@@ -584,6 +603,16 @@ class SuggestLedgerItemsTests(unittest.TestCase):
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
             result = suggest_ledger_items(1000, {"A": 500, "B": 300})
         self.assertEqual([{"product": "A", "qty": 2, "unit_cost": 500, "amount": 1000}], result)
+
+
+class ToDateTests(unittest.TestCase):
+    def test_accepts_hyphen_slash_and_dot_separators(self):
+        from datetime import date
+        expected = date(2025, 4, 23)
+        self.assertEqual(expected, _to_date("2025-04-23"))
+        self.assertEqual(expected, _to_date("2025/04/23"))
+        self.assertEqual(expected, _to_date("2025.04.23"))
+        self.assertEqual(expected, _to_date("2025.4.23"))
 
 
 if __name__ == "__main__": unittest.main()

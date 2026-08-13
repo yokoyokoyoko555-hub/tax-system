@@ -12,6 +12,10 @@
   <label>ファイル（複数選択可）
     <input type="file" name="files" accept=".xlsx,.csv" multiple required>
   </label>
+  <label>期末在庫表の場合の基準年月（任意）
+    <input type="month" name="inventory_as_of">
+  </label>
+  <p class="muted" style="margin-top:-0.5rem;">期末在庫表と判定されたファイルにのみ適用されます。他の種類のファイルには影響しません。</p>
   <button type="submit" class="button">取り込む</button>
 </form>
 
