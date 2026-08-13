@@ -351,7 +351,10 @@ class TaxSystem:
         source = Path(source).resolve(strict=True)
         if source.suffix.lower() != ".xlsx":
             raise ValueError(f"Excelファイル（.xlsx）を選択してください: {source.name}")
-        wb = load_workbook(source, read_only=False, data_only=False)
+        # data_only=True: read the cached calculated value for formula cells (e.g. 代価=単価×数量)
+        # rather than the formula text itself, so validation/matching see real numbers and the
+        # records view shows the actual amount instead of "=F3*G3".
+        wb = load_workbook(source, read_only=False, data_only=True)
         records: list[dict[str, Any]] = []
         sheets: list[dict[str, Any]] = []
         for ws in wb.worksheets:
