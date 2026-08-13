@@ -977,19 +977,22 @@ class TaxSystem:
                 (comparison_import_id, sheet, row_no, ledger_record_id, "manual", "[]", None, now),
             )
 
-    def _latest_inventory(self) -> dict[str, float]:
+    def _inventory_for_month(self, month: str | None) -> dict[str, float]:
+        """指定した基準年月（例: "2026-04"）と一致する期末在庫表から、商品名と仕入れ原価の
+        対応を返す。より新しい基準月の在庫表を代わりに使うと、対象月にはまだ仕入れていない
+        商品が紛れ込むおそれがあるため、必ず同じ基準月の在庫表のみを使う。該当する在庫表が
+        なければ空の辞書を返す（呼び出し側は「その月の在庫表がない」ものとして扱う）。
+        """
+        if month is None:
+            return {}
         with closing(self.connect()) as db, db:
             imps = db.execute(
                 "SELECT id, imported_at, metadata_json FROM imports WHERE kind='inventory'"
             ).fetchall()
-            if not imps:
+            matches = [imp for imp in imps if json.loads(imp["metadata_json"]).get("as_of") == month]
+            if not matches:
                 return {}
-            # prefer the snapshot with the latest 基準年月 (as_of); imports without one
-            # sort before those with one, so an as_of always wins over a bare upload time.
-            def sort_key(row: sqlite3.Row) -> tuple[Any, ...]:
-                as_of = json.loads(row["metadata_json"]).get("as_of")
-                return (as_of is not None, as_of or "", row["imported_at"])
-            imp = max(imps, key=sort_key)
+            imp = max(matches, key=lambda row: row["imported_at"])
             rows = db.execute("SELECT data_json FROM records WHERE import_id=?", (imp["id"],)).fetchall()
         costs: dict[str, float] = {}
         for row in rows:
@@ -1000,22 +1003,25 @@ class TaxSystem:
                 costs[product] = cost
         return costs
 
-    def search_inventory(self, query: str, limit: int = 30) -> list[dict[str, Any]]:
+    def search_inventory(self, query: str, month: str | None, limit: int = 30) -> list[dict[str, Any]]:
         query = query.strip()
         if not query:
             return []
         result = []
-        for product, cost in self._latest_inventory().items():
+        for product, cost in self._inventory_for_month(month).items():
             if query in product:
                 result.append({"product": product, "unit_cost": cost})
                 if len(result) >= limit:
                     break
         return result
 
-    def propose_ledger_breakdown(self, ledger_import_id: int) -> list[dict[str, Any]]:
+    def propose_ledger_breakdown(self, ledger_import_id: int, month: str | None = None) -> list[dict[str, Any]]:
         """商品名が空欄の古物台帳の行について、相対表から判明している内訳（確定）と、
         まだ手動で埋めていない残額（要確認）を計算する。金額の内訳は書き換えず、
         常にこの場で再計算するため、相対表・在庫表を取込み直すと結果も更新される。
+        month（例: "2026-04"）を指定すると、その仕入年月（日時）の行だけに絞り込む。
+        期末在庫表は各行の仕入年月と同じ基準月のものだけを使う。別の月の在庫表を代わりに
+        使うと、その月にはまだ仕入れていない商品が紛れ込むおそれがあるため。
         """
         with closing(self.connect()) as db, db:
             imp = db.execute("SELECT * FROM imports WHERE id=?", (ledger_import_id,)).fetchone()
@@ -1036,7 +1042,12 @@ class TaxSystem:
                 "SELECT * FROM ledger_items WHERE ledger_import_id=? ORDER BY id", (ledger_import_id,)
             ).fetchall()
 
-        inventory = self._latest_inventory()
+        inventory_cache: dict[str | None, dict[str, float]] = {}
+
+        def inventory_for(row_month: str | None) -> dict[str, float]:
+            if row_month not in inventory_cache:
+                inventory_cache[row_month] = self._inventory_for_month(row_month)
+            return inventory_cache[row_month]
 
         comparison_by_key: dict[tuple[str, date | None], list[dict[str, Any]]] = {}
         for row in comparison_rows:
@@ -1077,7 +1088,11 @@ class TaxSystem:
             row_no = record["row_no"]
             name = (data.get("名前") or "").strip()
             purchase_date = _to_date(data.get("日時"))
+            row_month = f"{purchase_date.year:04d}-{purchase_date.month:02d}" if purchase_date else None
+            if month is not None and row_month != month:
+                continue
             total = _to_number(data.get("金額"))
+            inventory = inventory_for(row_month)
 
             known = []
             for entry in comparison_by_key.get((name, purchase_date), []):
@@ -1095,9 +1110,10 @@ class TaxSystem:
             accounted = sum((i["amount"] or 0) for i in known + manual)
             remainder = (total - accounted) if total is not None else None
             results.append({
-                "row_no": row_no, "name": name, "date": purchase_date, "total": total,
+                "row_no": row_no, "name": name, "date": purchase_date, "month": row_month, "total": total,
                 "known_items": known, "manual_items": manual, "remainder": remainder,
                 "resolved": remainder is not None and abs(remainder) < 0.5,
+                "inventory_available": bool(inventory),
             })
         return results
 
@@ -1107,12 +1123,23 @@ class TaxSystem:
         )
         if not entry or entry["resolved"] or entry["remainder"] is None:
             return None
-        return suggest_ledger_items(entry["remainder"], self._latest_inventory())
+        return suggest_ledger_items(entry["remainder"], self._inventory_for_month(entry["month"]))
 
     def add_ledger_item(self, ledger_import_id: int, row_no: int, product: str, qty: float) -> None:
-        cost = self._latest_inventory().get(product)
+        with closing(self.connect()) as db, db:
+            record = db.execute(
+                "SELECT data_json FROM records WHERE import_id=? AND row_no=?", (ledger_import_id, row_no)
+            ).fetchone()
+        if not record:
+            raise ValueError("対象の行が見つかりません")
+        purchase_date = _to_date(json.loads(record["data_json"]).get("日時"))
+        month = f"{purchase_date.year:04d}-{purchase_date.month:02d}" if purchase_date else None
+        inventory = self._inventory_for_month(month)
+        if not inventory:
+            raise ValueError(f"{month or '該当行の仕入年月'}の期末在庫表が見つかりません。先に同じ基準月の期末在庫表を取り込んでください")
+        cost = inventory.get(product)
         if cost is None:
-            raise ValueError(f"期末在庫表に「{product}」の仕入れ原価が見つかりません")
+            raise ValueError(f"{month}の期末在庫表に「{product}」の仕入れ原価が見つかりません")
         now = datetime.now().isoformat(timespec="seconds")
         with closing(self.connect()) as db, db:
             db.execute(

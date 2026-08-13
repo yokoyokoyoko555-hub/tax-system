@@ -196,16 +196,19 @@ def create_app(home: str | Path | None = None) -> Flask:
         imp = ts.get_import(import_id)
         if not imp or imp["kind"] != "ledger":
             abort(404)
-        breakdown = ts.propose_ledger_breakdown(import_id)
+        month = request.args.get("month") or None
+        months = ts.list_months(import_id)
+        breakdown = ts.propose_ledger_breakdown(import_id, month=month)
         search_row = request.args.get("search_row", type=int)
         query = request.args.get("q", "").strip()
-        search_results = ts.search_inventory(query) if query else []
+        search_row_month = next((b["month"] for b in breakdown if b["row_no"] == search_row), None)
+        search_results = ts.search_inventory(query, search_row_month) if query and search_row_month else []
         all_resolved = bool(breakdown) and all(b["resolved"] for b in breakdown)
         suggestion = session.get("ledger_suggestion")
         if suggestion and suggestion.get("import_id") != import_id:
             suggestion = None
         return render_template(
-            "ledger_completion.html", imp=imp, breakdown=breakdown,
+            "ledger_completion.html", imp=imp, breakdown=breakdown, month=month, months=months,
             search_row=search_row, query=query, search_results=search_results, all_resolved=all_resolved,
             suggestion=suggestion,
         )
@@ -213,28 +216,31 @@ def create_app(home: str | Path | None = None) -> Flask:
     @app.route("/ledger-completion/<int:import_id>/<int:row_no>/suggest", methods=["POST"])
     def ledger_completion_suggest(import_id: int, row_no: int):
         ts = system()
+        month = request.form.get("month") or None
         items = ts.suggest_ledger_completion(import_id, row_no)
         if not items:
             flash("AIによる提案を取得できませんでした（APIキー未設定か、提案できる組み合わせが見つかりませんでした）", "error")
         session["ledger_suggestion"] = {"import_id": import_id, "row_no": row_no, "items": items or []}
-        return redirect(url_for("ledger_completion_view", import_id=import_id))
+        return redirect(url_for("ledger_completion_view", import_id=import_id, month=month))
 
     @app.route("/ledger-completion/<int:import_id>/<int:row_no>/add", methods=["POST"])
     def ledger_completion_add(import_id: int, row_no: int):
         ts = system()
+        month = request.form.get("month") or None
         product = request.form.get("product", "").strip()
         qty = request.form.get("qty", "").strip()
         try:
             ts.add_ledger_item(import_id, row_no, product, float(qty))
         except (ValueError, TypeError) as exc:
             flash(f"追加に失敗しました: {exc}", "error")
-        return redirect(url_for("ledger_completion_view", import_id=import_id))
+        return redirect(url_for("ledger_completion_view", import_id=import_id, month=month))
 
     @app.route("/ledger-completion/<int:import_id>/<int:row_no>/remove/<int:item_id>", methods=["POST"])
     def ledger_completion_remove(import_id: int, row_no: int, item_id: int):
         ts = system()
+        month = request.form.get("month") or None
         ts.remove_ledger_item(item_id)
-        return redirect(url_for("ledger_completion_view", import_id=import_id))
+        return redirect(url_for("ledger_completion_view", import_id=import_id, month=month))
 
     @app.route("/ledger-completion/<int:import_id>/export", methods=["POST"])
     def ledger_completion_export(import_id: int):

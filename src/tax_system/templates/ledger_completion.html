@@ -5,11 +5,24 @@
 <p class="lead">
   取込ID {{ imp.id }}（古物台帳 / {{ imp.source_name }}）のうち商品名が空欄の行について、
   相対表からわかる内訳（確定）と、期末在庫表から手動で選んだ内訳（手動）を管理します。<br>
-  すべての行で内訳の合計が元の金額と一致すると、内訳付きの古物台帳を出力できます。
+  すべての行で内訳の合計が元の金額と一致すると、内訳付きの古物台帳を出力できます。<br>
+  期末在庫表は、各行の仕入年月と同じ基準月のものだけを使います（別の月の在庫を流用すると、
+  その月にまだ無かった商品が紛れ込むおそれがあるため）。
 </p>
 
+{% if months %}
+<p>
+  対象月:
+  {% if not month %}<strong>すべて</strong>{% else %}<a href="{{ url_for('ledger_completion_view', import_id=imp.id) }}">すべて</a>{% endif %}
+  {% for m in months %}
+    |
+    {% if m == month %}<strong>{{ m }}</strong>{% else %}<a href="{{ url_for('ledger_completion_view', import_id=imp.id, month=m) }}">{{ m }}</a>{% endif %}
+  {% endfor %}
+</p>
+{% endif %}
+
 {% if not breakdown %}
-<p class="muted">商品名が空欄の行はありません。</p>
+<p class="muted">{% if month %}{{ month }}には{% endif %}商品名が空欄の行はありません。</p>
 {% else %}
 
 {% for b in breakdown %}
@@ -38,6 +51,7 @@
         <td>手動</td>
         <td>
           <form method="post" action="{{ url_for('ledger_completion_remove', import_id=imp.id, row_no=b.row_no, item_id=item.id) }}">
+            <input type="hidden" name="month" value="{{ month or '' }}">
             <button type="submit" class="button small">削除</button>
           </form>
         </td>
@@ -58,7 +72,11 @@
   </p>
 
   {% if not b.resolved %}
+  {% if not b.inventory_available %}
+  <p class="muted level-error">{{ b.month or "この行の仕入年月" }}の期末在庫表が見つかりません。先に同じ基準月の期末在庫表を取り込んでください。</p>
+  {% else %}
   <form method="get" action="{{ url_for('ledger_completion_view', import_id=imp.id) }}">
+    <input type="hidden" name="month" value="{{ month or '' }}">
     <input type="hidden" name="search_row" value="{{ b.row_no }}">
     <input type="text" name="q" placeholder="商品名で検索" value="{{ query if search_row == b.row_no else '' }}">
     <button type="submit" class="button small">検索</button>
@@ -69,6 +87,7 @@
       {% for r in search_results %}
       <form method="post" action="{{ url_for('ledger_completion_add', import_id=imp.id, row_no=b.row_no) }}"
             style="display:flex; gap:0.5rem; align-items:center; margin:0.4rem 0;">
+        <input type="hidden" name="month" value="{{ month or '' }}">
         <input type="hidden" name="product" value="{{ r.product }}">
         <span style="flex:1;">{{ r.product }}（仕入れ原価 {{ r.unit_cost | num }}円）</span>
         <input type="number" name="qty" step="any" min="0" required placeholder="数量" style="width:6em;">
@@ -77,20 +96,22 @@
       {% endfor %}
     </div>
     {% else %}
-    <p class="muted">該当する商品が期末在庫表に見つかりません</p>
+    <p class="muted">該当する商品が{{ b.month }}の期末在庫表に見つかりません</p>
     {% endif %}
   {% endif %}
 
   <form method="post" action="{{ url_for('ledger_completion_suggest', import_id=imp.id, row_no=b.row_no) }}">
+    <input type="hidden" name="month" value="{{ month or '' }}">
     <button type="submit" class="button small">AIに残額の組み合わせを提案してもらう</button>
   </form>
   {% if suggestion and suggestion.row_no == b.row_no %}
     {% if suggestion['items'] %}
     <div>
-      <p class="muted">AIによる提案です。内容を確認してから追加してください。</p>
+      <p class="muted">AIによる提案です（{{ b.month }}の期末在庫表の商品のみ）。内容を確認してから追加してください。</p>
       {% for it in suggestion['items'] %}
       <form method="post" action="{{ url_for('ledger_completion_add', import_id=imp.id, row_no=b.row_no) }}"
             style="display:flex; gap:0.5rem; align-items:center; margin:0.4rem 0;">
+        <input type="hidden" name="month" value="{{ month or '' }}">
         <input type="hidden" name="product" value="{{ it.product }}">
         <span style="flex:1;">{{ it.product }}（仕入れ原価 {{ it.unit_cost | num }}円） 提案合計: {{ it.amount | num }}円</span>
         <input type="number" name="qty" step="any" min="0" required value="{{ it.qty | num }}" style="width:6em;">
@@ -101,6 +122,7 @@
     {% else %}
     <p class="muted">AIから提案を取得できませんでした。</p>
     {% endif %}
+  {% endif %}
   {% endif %}
   {% endif %}
 </div>

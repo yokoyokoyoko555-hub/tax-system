@@ -206,6 +206,9 @@ class LedgerCompletionTests(unittest.TestCase):
             writer.writerow({"商品名": "テストカードB", "仕入れ原価": "3000", "在庫数": "5"})
         return path
 
+    def import_inventory_for(self, month):
+        self.app.import_inventory(self.write_inventory(), as_of=month)
+
     def write_ledger_lump(self, total):
         path = self.root / "ledger.csv"
         row = dict(zip(LEDGER_COLUMNS, [
@@ -231,7 +234,7 @@ class LedgerCompletionTests(unittest.TestCase):
         wb.save(path)
         return path
 
-    def test_latest_inventory_prefers_later_as_of_over_upload_order(self):
+    def test_inventory_for_month_uses_exact_basis_month_not_latest(self):
         path1 = self.root / "inv_may.csv"
         with path1.open("w", encoding="utf-8-sig", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=INVENTORY_COLUMNS, lineterminator="\r\n")
@@ -239,7 +242,6 @@ class LedgerCompletionTests(unittest.TestCase):
             writer.writerow({"商品名": "テストカードA", "仕入れ原価": "9999", "在庫数": "1"})
         self.app.import_inventory(path1, as_of="2026-05")
 
-        # uploaded second (higher id / later imported_at) but represents an EARLIER period
         path2 = self.root / "inv_april.csv"
         with path2.open("w", encoding="utf-8-sig", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=INVENTORY_COLUMNS, lineterminator="\r\n")
@@ -247,10 +249,14 @@ class LedgerCompletionTests(unittest.TestCase):
             writer.writerow({"商品名": "テストカードA", "仕入れ原価": "1111", "在庫数": "1"})
         self.app.import_inventory(path2, as_of="2026-04")
 
-        self.assertEqual(9999, self.app._latest_inventory()["テストカードA"])
+        # each month must use its OWN basis-month inventory, never the newer one
+        self.assertEqual(1111, self.app._inventory_for_month("2026-04")["テストカードA"])
+        self.assertEqual(9999, self.app._inventory_for_month("2026-05")["テストカードA"])
+        self.assertEqual({}, self.app._inventory_for_month("2026-06"))
+        self.assertEqual({}, self.app._inventory_for_month(None))
 
     def test_breakdown_uses_comparison_and_manual_fill(self):
-        self.app.import_inventory(self.write_inventory())
+        self.import_inventory_for("2026-05")
         ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))
         self.app.import_comparison(self.write_comparison([
             (["2026-05-01", "テストカードA", 1, "鈴木一郎", 5000], ["2026-06-01", 1]),
@@ -260,6 +266,7 @@ class LedgerCompletionTests(unittest.TestCase):
         breakdown = self.app.propose_ledger_breakdown(ledger_id)
         self.assertEqual(1, len(breakdown))
         entry = breakdown[0]
+        self.assertEqual("2026-05", entry["month"])
         self.assertEqual(2, len(entry["known_items"]))
         self.assertAlmostEqual(8000, sum(i["amount"] for i in entry["known_items"]))
         self.assertFalse(entry["resolved"])
@@ -277,13 +284,53 @@ class LedgerCompletionTests(unittest.TestCase):
         self.assertAlmostEqual(11000, sum(float(r["金額"]) for r in rows))
 
     def test_export_blocked_when_unresolved(self):
-        self.app.import_inventory(self.write_inventory())
+        self.import_inventory_for("2026-05")
         ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))
         self.app.import_comparison(self.write_comparison([
             (["2026-05-01", "テストカードA", 1, "鈴木一郎", 5000], ["2026-06-01", 1]),
         ]))
         with self.assertRaises(ValueError):
             self.app.export_completed_ledger(ledger_id, self.root / "blocked.csv")
+
+    def test_breakdown_filters_by_target_month(self):
+        self.import_inventory_for("2026-05")
+        ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))
+        self.app.import_comparison(self.write_comparison([
+            (["2026-05-01", "テストカードA", 1, "鈴木一郎", 5000], ["2026-06-01", 1]),
+        ]))
+
+        self.assertEqual(1, len(self.app.propose_ledger_breakdown(ledger_id, month="2026-05")))
+        self.assertEqual(0, len(self.app.propose_ledger_breakdown(ledger_id, month="2026-04")))
+
+    def test_add_ledger_item_rejects_non_matching_month_inventory(self):
+        # inventory is only available for April; the ledger row is from May, so no
+        # inventory should be usable for it, even though a (different-month) snapshot exists.
+        self.import_inventory_for("2026-04")
+        ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))
+        breakdown = self.app.propose_ledger_breakdown(ledger_id)
+        row_no = breakdown[0]["row_no"]
+        self.assertFalse(breakdown[0]["inventory_available"])
+        with self.assertRaises(ValueError):
+            self.app.add_ledger_item(ledger_id, row_no, "テストカードA", 1)
+
+    def test_suggest_ledger_completion_never_invents_products(self):
+        self.import_inventory_for("2026-05")
+        ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_openai_cls.return_value = mock_client
+            mock_response = MagicMock()
+            mock_response.choices[0].message.content = json.dumps({
+                "items": [
+                    {"product": "テストカードA", "qty": 1},
+                    {"product": "存在しないカード", "qty": 1},
+                ]
+            })
+            mock_client.chat.completions.create.return_value = mock_response
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+                row_no = self.app.propose_ledger_breakdown(ledger_id)[0]["row_no"]
+                items = self.app.suggest_ledger_completion(ledger_id, row_no)
+        self.assertEqual([{"product": "テストカードA", "qty": 1, "unit_cost": 5000, "amount": 5000}], items)
 
 
 class BuildComparisonTests(unittest.TestCase):
