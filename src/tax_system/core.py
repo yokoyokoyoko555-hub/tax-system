@@ -1203,7 +1203,9 @@ class TaxSystem:
         個数・金額が完全に一致する行をまとめる。結合の際にも重複候補として報告されるが、
         取込直後に見落とした場合や、後から見直したい場合のためにいつでも確認できるようにする。
         本人確認情報（ふりがな・生年月日・住所・電話番号）がより多く埋まっている方を残す候補とし、
-        情報が少ない方に削除推奨を付ける（同数の場合はどちらも推奨しない＝人が判断する）。
+        情報が少ない方に削除推奨を付ける。情報量が同じ場合でも、行の中身が完全に一致するなら
+        （＝どちらを残しても情報が減らない）1件だけ残して残りを削除推奨にする。情報量が同じで
+        中身にも違いがある場合のみ、どちらも推奨せず人の判断に委ねる。
         """
         with closing(self.connect()) as db, db:
             rows = db.execute(
@@ -1221,8 +1223,15 @@ class TaxSystem:
                 continue
             best = max(o["completeness"] for o in occurrences)
             clear_winner = sum(1 for o in occurrences if o["completeness"] == best) == 1
-            for o in occurrences:
-                o["recommended_delete"] = clear_winner and o["completeness"] < best
+            if clear_winner:
+                for o in occurrences:
+                    o["recommended_delete"] = o["completeness"] < best
+            elif len({json.dumps(o["data"], sort_keys=True) for o in occurrences}) == 1:
+                for index, o in enumerate(occurrences):
+                    o["recommended_delete"] = index > 0
+            else:
+                for o in occurrences:
+                    o["recommended_delete"] = False
             results.append({"occurrences": occurrences})
         return results
 

@@ -694,14 +694,28 @@ class MergeLedgerTests(unittest.TestCase):
         _, total = self.app.get_records(result["import_id"])
         self.assertEqual(1, total)
 
-    def test_find_ledger_duplicates_no_recommendation_when_tied(self):
-        # both rows have identical completeness (both bare) — no clear winner, so
-        # neither should be auto-flagged for deletion; a human has to decide.
+    def test_find_ledger_duplicates_recommends_one_when_rows_are_byte_identical(self):
+        # both rows tie on completeness (both bare) but are otherwise fully identical —
+        # keeping either one loses no information, so one is still safe to recommend.
         first = self.app.import_ledger(self.write_ledger([
             ["2026-04-01", "A", "", "", "", "", "商品A", "1", "1000", "1000", ""],
         ], "a.csv"))
         second = self.app.import_ledger(self.write_ledger([
             ["2026-04-01", "A", "", "", "", "", "商品A", "1", "1000", "1000", ""],
+        ], "b.csv"))
+        result = self.app.merge_ledger_imports([first, second])
+
+        occurrences = self.app.find_ledger_duplicates(result["import_id"])[0]["occurrences"]
+        self.assertEqual(1, sum(1 for o in occurrences if o["recommended_delete"]))
+
+    def test_find_ledger_duplicates_no_recommendation_when_tied_but_different(self):
+        # both rows tie on completeness AND actually differ in content (different
+        # addresses) — genuinely ambiguous, so neither should be auto-flagged.
+        first = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "えー", "1990-01-01", "住所A", "000", "商品A", "1", "1000", "1000", ""],
+        ], "a.csv"))
+        second = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "えー", "1990-01-01", "住所B", "000", "商品A", "1", "1000", "1000", ""],
         ], "b.csv"))
         result = self.app.merge_ledger_imports([first, second])
 
