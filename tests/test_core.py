@@ -113,6 +113,12 @@ class LedgerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.app.delete_import(import_id)
 
+    def test_rename_import_source_updates_display_name(self):
+        row = dict(zip(LEDGER_COLUMNS, ["2026-01-01", "テスト", "てすと", "2000-01-01", "匿名住所", "000", "商品", "2", "100", "200", ""]))
+        import_id = self.app.import_ledger(self.write_csv(row))
+        self.app.rename_import_source(import_id, "元のファイル名.csv")
+        self.assertEqual("元のファイル名.csv", self.app.get_import(import_id)["source_name"])
+
 
 class AllocationTests(unittest.TestCase):
     PURCHASE_HEADERS = ["年月日", "品目", "数量", "相手方名", "代価"]
@@ -846,6 +852,20 @@ class FormatNumberTests(unittest.TestCase):
         self.assertEqual("080-1234-5678", format_number("080-1234-5678"))
         self.assertEqual(3, format_number(3))
         self.assertIsNone(format_number(None))
+
+
+class SafeUploadFilenameTests(unittest.TestCase):
+    def test_preserves_extension_for_all_japanese_filename(self):
+        # secure_filename() strips an entirely non-ASCII basename down to "", which
+        # would otherwise swallow the extension along with it (Path("csv").suffix == "").
+        from tax_system.web import safe_upload_filename
+        result = safe_upload_filename("ワンピースカード　システム　買取伝票.csv", "upload-0")
+        self.assertTrue(result.endswith(".csv"))
+        self.assertEqual("upload-0.csv", result)
+
+    def test_keeps_sanitized_ascii_basename(self):
+        from tax_system.web import safe_upload_filename
+        self.assertEqual("report.csv", safe_upload_filename("report.csv", "upload-0"))
 
 
 class ComparisonLibraryTests(unittest.TestCase):

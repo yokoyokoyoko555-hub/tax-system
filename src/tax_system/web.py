@@ -18,6 +18,17 @@ FLAT_COLUMNS = {"ledger": LEDGER_COLUMNS, "inventory": INVENTORY_DISPLAY_COLUMNS
 OUTPUT_DIR = Path("outputs").resolve()
 
 
+def safe_upload_filename(original_name: str, fallback: str) -> str:
+    """secure_filename() は非ASCII文字だけの名前（日本語のみのファイル名など）を
+    拡張子ごと消してしまい、拡張子で種類判定するimport_autoが「対応していない
+    ファイル形式」として弾いてしまう。拡張子は元のファイル名からそのまま残し、
+    ベース名だけ安全化する（安全化した結果が空ならfallbackを使う）。
+    """
+    suffix = Path(original_name).suffix
+    base = secure_filename(Path(original_name).stem) or fallback
+    return base + suffix
+
+
 def format_number(value):
     """表示用: 整数値のfloatは末尾の.0を取り除く（10800.0 -> 10800）。
     実際にfloat型の値だけを対象にする（電話番号・郵便番号など数字に見える
@@ -145,7 +156,7 @@ def create_app(home: str | Path | None = None) -> Flask:
                 flash("ファイルを選択してください", "error")
                 return redirect(url_for("new_template"))
             with tempfile.TemporaryDirectory() as tmp:
-                path = Path(tmp) / secure_filename(upload.filename)
+                path = Path(tmp) / safe_upload_filename(upload.filename, "template")
                 upload.save(path)
                 try:
                     system().register_template(
@@ -170,11 +181,12 @@ def create_app(home: str | Path | None = None) -> Flask:
             inventory_as_of = request.form.get("inventory_as_of") or None
             results = []
             with tempfile.TemporaryDirectory() as tmp:
-                for upload in uploads:
-                    path = Path(tmp) / secure_filename(upload.filename)
+                for index, upload in enumerate(uploads):
+                    path = Path(tmp) / safe_upload_filename(upload.filename, f"upload-{index}")
                     upload.save(path)
                     try:
                         result = ts.import_auto(path, inventory_as_of=inventory_as_of)
+                        ts.rename_import_source(result["import_id"], upload.filename)
                         results.append({"filename": upload.filename, "ok": True, **result})
                     except ValueError as exc:
                         results.append({"filename": upload.filename, "ok": False, "error": str(exc)})

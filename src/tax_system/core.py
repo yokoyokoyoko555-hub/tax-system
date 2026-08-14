@@ -557,6 +557,13 @@ class TaxSystem:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def rename_import_source(self, import_id: int, source_name: str) -> None:
+        """取込のファイル名表示を差し替える。取込処理自体はディスク保存用に安全化した
+        ファイル名で行うため、元のファイル名（日本語名など）を後から復元するのに使う。
+        """
+        with closing(self.connect()) as db, db:
+            db.execute("UPDATE imports SET source_name=? WHERE id=?", (source_name, import_id))
+
     def list_imports(self) -> list[dict[str, Any]]:
         with closing(self.connect()) as db, db:
             rows = db.execute(
