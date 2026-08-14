@@ -481,6 +481,46 @@ class RawLedgerImportTests(unittest.TestCase):
         self.assertEqual("", data["商品名"])
         self.assertEqual(5000, data["金額"])
 
+    def write_identity_csv(self, rows, with_email):
+        columns = LEDGER_IDENTITY_COLUMNS[:-1] + (["メールアドレス"] if with_email else []) + LEDGER_IDENTITY_COLUMNS[-1:]
+        path = self.root / "identity.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.writer(fh, lineterminator="\r\n")
+            writer.writerow(columns)
+            for row in rows:
+                writer.writerow(row)
+        return path
+
+    def test_identity_csv_import_without_email_column(self):
+        result = self.app.import_ledger_identity(self.write_identity_csv(
+            [["2026-04-01", "テスト太郎", "てすとたろう", "1990-01-01", "匿名住所", "000-0000", "5000"]],
+            with_email=False,
+        ))
+        self.assertEqual(1, result["imported"])
+        records, _ = self.app.get_records(result["import_id"])
+        self.assertEqual("テスト太郎", records[0]["data"]["名前"])
+
+    def test_identity_csv_import_ignores_email_column(self):
+        result = self.app.import_ledger_identity(self.write_identity_csv(
+            [["2026-04-01", "テスト太郎", "てすとたろう", "1990-01-01", "匿名住所", "000-0000", "taro@example.com", "5000"]],
+            with_email=True,
+        ))
+        self.assertEqual(1, result["imported"])
+        records, _ = self.app.get_records(result["import_id"])
+        data = records[0]["data"]
+        self.assertEqual("テスト太郎", data["名前"])
+        self.assertEqual("000-0000", data["電話番号"])
+        self.assertEqual("5000", data["金額"])
+
+    def test_import_auto_recognizes_identity_csv_with_email_column(self):
+        path = self.write_identity_csv(
+            [["2026-04-01", "テスト太郎", "てすとたろう", "1990-01-01", "匿名住所", "000-0000", "taro@example.com", "5000"]],
+            with_email=True,
+        )
+        result = self.app.import_auto(path)
+        self.assertEqual("ledger", result["kind"])
+        self.assertEqual("古物台帳（本人確認データ）", result["label"])
+
 
 class AutoImportTests(unittest.TestCase):
     def setUp(self):

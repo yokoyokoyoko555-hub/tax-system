@@ -310,40 +310,58 @@ class TaxSystem:
         )
         return {"import_id": import_id, "imported": len(rows), "skipped": skipped}
 
+    def _build_ledger_identity_rows(self, header: list[Any], raw_rows: Iterable[Any]) -> list[dict[str, Any]]:
+        # メールアドレス列は取込先の古物台帳の形式に無いため、あっても無視する（無くても可）。
+        with_email = LEDGER_IDENTITY_COLUMNS[:-1] + ["メールアドレス", LEDGER_IDENTITY_COLUMNS[-1]]
+        if header != LEDGER_IDENTITY_COLUMNS and header != with_email:
+            raise ValueError(f"本人確認データの列が想定と一致しません（{LEDGER_IDENTITY_COLUMNS}）: {header}")
+        rows: list[dict[str, Any]] = []
+        for values in raw_rows:
+            values = list(values)[: len(header)]
+            if all(v in (None, "") for v in values) or _is_header_echo(values, header):
+                continue
+            data = dict(zip(header, values))
+            rows.append({k: "" for k in LEDGER_COLUMNS} | {
+                "日時": data.get("日時") or "", "名前": data.get("名前") or "",
+                "ふりがな": data.get("名前ふりがな") or "", "生年月日": data.get("生年月日") or "",
+                "住所": data.get("住所") or "", "電話番号": data.get("電話番号") or "",
+                "金額": data.get("金額") if data.get("金額") is not None else "",
+            })
+        return rows
+
     def import_ledger_identity(self, source: str | Path) -> dict[str, Any]:
-        """本人確認データExcel（日時/名前/名前ふりがな/生年月日/住所/電話番号/金額）を
+        """本人確認データ（日時/名前/名前ふりがな/生年月日/住所/電話番号/[メールアドレス]/金額）を
         古物台帳の標準形式に変換して取り込む。商品情報（商品名・個数・単価）と備考は
-        この形式には無いため空欄のまま登録する。
+        この形式には無いため空欄のまま登録する。メールアドレス列があっても無視する。
+        Excel（.xlsx）とCSVの両方に対応する。
         """
         self.initialize()
         source = Path(source).resolve(strict=True)
-        if source.suffix.lower() != ".xlsx":
-            raise ValueError(f"Excelファイル（.xlsx）を選択してください: {source.name}")
-        wb = load_workbook(source, read_only=True, data_only=True)
-        try:
-            ws = wb.worksheets[0]
-            header = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
-            while header and header[-1] is None:
-                header.pop()
-            if header != LEDGER_IDENTITY_COLUMNS:
-                raise ValueError(f"本人確認データの列が想定と一致しません（{LEDGER_IDENTITY_COLUMNS}）: {header}")
-            rows: list[dict[str, Any]] = []
-            for values in ws.iter_rows(min_row=2, values_only=True):
-                values = values[: len(LEDGER_IDENTITY_COLUMNS)]
-                if all(v in (None, "") for v in values) or _is_header_echo(values, LEDGER_IDENTITY_COLUMNS):
-                    continue
-                data = dict(zip(LEDGER_IDENTITY_COLUMNS, values))
-                rows.append({k: "" for k in LEDGER_COLUMNS} | {
-                    "日時": data.get("日時") or "", "名前": data.get("名前") or "",
-                    "ふりがな": data.get("名前ふりがな") or "", "生年月日": data.get("生年月日") or "",
-                    "住所": data.get("住所") or "", "電話番号": data.get("電話番号") or "",
-                    "金額": data.get("金額") if data.get("金額") is not None else "",
-                })
-        finally:
-            wb.close()
-        import_id = self._save_import(
-            "ledger", source.name, sha256(source), rows, {"source_format": "identity_xlsx"},
-        )
+        suffix = source.suffix.lower()
+        metadata: dict[str, Any] = {}
+        if suffix == ".xlsx":
+            wb = load_workbook(source, read_only=True, data_only=True)
+            try:
+                ws = wb.worksheets[0]
+                header = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+                while header and header[-1] is None:
+                    header.pop()
+                raw_rows = list(ws.iter_rows(min_row=2, values_only=True))
+            finally:
+                wb.close()
+            metadata["source_format"] = "identity_xlsx"
+        elif suffix == ".csv":
+            text, encoding = _read_csv_text(source)
+            csv_rows = list(csv.reader(text.splitlines()))
+            header = csv_rows[0] if csv_rows else []
+            raw_rows = csv_rows[1:]
+            metadata["source_format"] = "identity_csv"
+            metadata["encoding"] = encoding
+        else:
+            raise ValueError(f"Excel（.xlsx）またはCSVファイルを選択してください: {source.name}")
+
+        rows = self._build_ledger_identity_rows(header, raw_rows)
+        import_id = self._save_import("ledger", source.name, sha256(source), rows, metadata)
         return {"import_id": import_id, "imported": len(rows)}
 
     def import_comparison(self, source: str | Path) -> int:
@@ -436,6 +454,7 @@ class TaxSystem:
             candidates: list[tuple[str, Any]] = [
                 ("古物台帳", lambda: {"kind": "ledger", "import_id": self.import_ledger(source)}),
                 ("古物台帳（POS取引データ）", lambda: {"kind": "ledger", **self.import_ledger_pos(source)}),
+                ("古物台帳（本人確認データ）", lambda: {"kind": "ledger", **self.import_ledger_identity(source)}),
                 ("期末在庫表", lambda: {"kind": "inventory", "import_id": self.import_inventory(source, inventory_as_of)}),
                 ("期末在庫表（ECサイト商品CSV）", lambda: {"kind": "inventory", **self.import_inventory_products(source, inventory_as_of)}),
                 ("輸出データ", lambda: {"kind": "export_data", "import_id": self.import_export_data(source)}),
