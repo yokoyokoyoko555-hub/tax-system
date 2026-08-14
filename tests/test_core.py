@@ -470,6 +470,40 @@ class RawLedgerImportTests(unittest.TestCase):
         self.assertIn("備考1", data["備考"])
         self.assertIn("全体1", data["備考"])
 
+    def test_pos_import_tolerates_trailing_comma_in_header(self):
+        # some POS exports add a trailing comma to every line (an extra blank column),
+        # which must not cause a strict header mismatch.
+        path = self.root / "pos_trailing_comma.csv"
+        header = ",".join(LEDGER_POS_COLUMNS) + ",\r\n"
+        row = "1,承認済み,2026-04-01 10:00:00,1,テスト太郎,明細なし,カードA,1,1000,1000,,,\r\n"
+        path.write_text("﻿" + header + row, encoding="utf-8")
+        result = self.app.import_ledger_pos(path)
+        self.assertEqual(1, result["imported"])
+        records, _ = self.app.get_records(result["import_id"])
+        self.assertEqual("カードA", records[0]["data"]["商品名"])
+
+    def test_pos_import_defers_multi_item_transactions_to_ledger_completion(self):
+        # a second (and later) card in the same purchase is recorded as a continuation
+        # row: 履歴ID/状態/日時/ユーザーID/氏名 blank, only カード名/数量/単価 filled.
+        # The single 商品名/個数/単価 slot can't represent both items, so both are left
+        # blank for 内訳復元 to reconstruct from 相対表, instead of silently dropping
+        # the second item while keeping the first as if it were the whole purchase.
+        result = self.app.import_ledger_pos(self.write_pos_csv([
+            ["1", "承認済み", "2026-04-01 10:00:00", "1", "テスト太郎", "明細なし", "カードA", "1", "1000", "3530", "", ""],
+            ["", "", "", "", "", "", "カードB", "1", "530", "", "", ""],
+            ["2", "承認済み", "2026-04-02 10:00:00", "1", "テスト次郎", "明細なし", "カードC", "1", "2000", "2000", "", ""],
+        ]))
+        self.assertEqual(2, result["imported"])
+        self.assertEqual(0, result["skipped"])
+        records, _ = self.app.get_records(result["import_id"])
+        by_name = {r["data"]["名前"]: r["data"] for r in records}
+        self.assertEqual("", by_name["テスト太郎"]["商品名"])
+        self.assertEqual("", by_name["テスト太郎"]["個数"])
+        self.assertEqual("3530", by_name["テスト太郎"]["金額"])
+        # single-item purchases are unaffected
+        self.assertEqual("カードC", by_name["テスト次郎"]["商品名"])
+        self.assertEqual("2000", by_name["テスト次郎"]["金額"])
+
     def test_identity_import_maps_fields_and_ignores_trailing_blank_column(self):
         result = self.app.import_ledger_identity(self.write_identity_xlsx([
             ["2026-04-01", "テスト太郎", "てすとたろう", "1990-01-01", "匿名住所", "000-0000", 5000],

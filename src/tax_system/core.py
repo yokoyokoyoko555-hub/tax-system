@@ -158,6 +158,17 @@ def _is_header_echo(values: Any, columns: list[str]) -> bool:
     return list(values) == columns
 
 
+def _strip_trailing_blank_columns(fieldnames: list[str] | None) -> list[str]:
+    """Excel等で保存したCSVは末尾に余分なカンマが付き、見出しが空文字列の列が
+    増えることがある（本来の列数と一致しなくなり取込が弾かれる原因になる）。
+    末尾の空欄の列名を取り除く。
+    """
+    fieldnames = list(fieldnames or [])
+    while fieldnames and not fieldnames[-1]:
+        fieldnames.pop()
+    return fieldnames
+
+
 def _index_of(headers: list[Any], name: str, contains: bool = False) -> int | None:
     for index, header in enumerate(headers):
         if header is None:
@@ -280,6 +291,7 @@ class TaxSystem:
         source = Path(source).resolve(strict=True)
         text, encoding = _read_csv_text(source)
         reader = csv.DictReader(text.splitlines())
+        reader.fieldnames = _strip_trailing_blank_columns(reader.fieldnames)
         if reader.fieldnames != LEDGER_COLUMNS:
             raise ValueError(f"古物台帳の列が既存仕様と一致しません: {reader.fieldnames}")
         rows = [row for row in reader if not _is_header_echo(row.values(), LEDGER_COLUMNS)]
@@ -289,25 +301,55 @@ class TaxSystem:
         """POSの取引CSV（履歴ID/状態/日時/ユーザーID/氏名/カード番号/カード名/数量/単価/金額/カード備考/全体備考）を
         古物台帳の標準形式に変換して取り込む。本人確認情報（ふりがな・生年月日・住所・電話番号）は
         この形式には無いため空欄のまま登録する。「状態」が「承認済み」以外の行は対象外とし、件数を報告する。
+        1件の取引に商品が複数含まれる場合、2行目以降は履歴ID・状態などが空欄のまま商品名だけが
+        続く形式で記録される。この場合、商品名・個数・単価は1行に収まらないため空欄のまま登録し
+        （内訳復元で相対表をもとに埋め直せるようにする）、金額（合計）と日時・名前は1行目の値を使う。
         """
         self.initialize()
         source = Path(source).resolve(strict=True)
         text, encoding = _read_csv_text(source)
         reader = csv.DictReader(text.splitlines())
+        reader.fieldnames = _strip_trailing_blank_columns(reader.fieldnames)
         if reader.fieldnames != LEDGER_POS_COLUMNS:
             raise ValueError(f"POS取引データの列が想定と一致しません（{LEDGER_POS_COLUMNS}）: {reader.fieldnames}")
+
+        def finalize(pending: dict[str, Any], multi_item: bool) -> dict[str, Any]:
+            row = {k: "" for k in LEDGER_COLUMNS} | {
+                "日時": pending["日時"], "名前": pending["名前"],
+                "金額": pending["金額"], "備考": pending["備考"],
+            }
+            if not multi_item:
+                row["商品名"] = pending["商品名"]
+                row["個数"] = pending["個数"]
+                row["単価"] = pending["単価"]
+            return row
+
         rows: list[dict[str, Any]] = []
         skipped = 0
+        pending: dict[str, Any] | None = None
+        multi_item = False
         for row in reader:
-            if row.get("状態") != "承認済み":
+            status = row.get("状態")
+            if status == "承認済み":
+                if pending is not None:
+                    rows.append(finalize(pending, multi_item))
+                note = " ".join(part for part in (row.get("カード備考"), row.get("全体備考")) if part).strip()
+                pending = {
+                    "日時": row.get("日時", ""), "名前": row.get("氏名", ""),
+                    "商品名": row.get("カード名", ""), "個数": row.get("数量", ""),
+                    "単価": row.get("単価", ""), "金額": row.get("金額", ""), "備考": note,
+                }
+                multi_item = False
+            elif not status:
+                # 空欄の状態: 直前の承認済み取引に商品名だけが続く2行目以降（複数商品の内訳行）か、
+                # 完全に空の行のどちらか。カード名があれば前者とみなす。
+                if pending is not None and (row.get("カード名") or "").strip():
+                    multi_item = True
+            else:
                 skipped += 1
-                continue
-            note = " ".join(part for part in (row.get("カード備考"), row.get("全体備考")) if part).strip()
-            rows.append({k: "" for k in LEDGER_COLUMNS} | {
-                "日時": row.get("日時", ""), "名前": row.get("氏名", ""),
-                "商品名": row.get("カード名", ""), "個数": row.get("数量", ""),
-                "単価": row.get("単価", ""), "金額": row.get("金額", ""), "備考": note,
-            })
+        if pending is not None:
+            rows.append(finalize(pending, multi_item))
+
         import_id = self._save_import(
             "ledger", source.name, sha256(source), rows,
             {"encoding": encoding, "source_format": "pos_csv", "skipped_not_approved": skipped},
@@ -357,7 +399,7 @@ class TaxSystem:
         elif suffix == ".csv":
             text, encoding = _read_csv_text(source)
             csv_rows = list(csv.reader(text.splitlines()))
-            header = csv_rows[0] if csv_rows else []
+            header = _strip_trailing_blank_columns(csv_rows[0] if csv_rows else [])
             raw_rows = csv_rows[1:]
             metadata["source_format"] = "identity_csv"
             metadata["encoding"] = encoding
@@ -400,6 +442,7 @@ class TaxSystem:
         source = Path(source).resolve(strict=True)
         text, encoding = _read_csv_text(source)
         reader = csv.DictReader(text.splitlines())
+        reader.fieldnames = _strip_trailing_blank_columns(reader.fieldnames)
         if reader.fieldnames != INVENTORY_COLUMNS:
             raise ValueError(f"期末在庫表の列が想定と一致しません（{INVENTORY_COLUMNS}）: {reader.fieldnames}")
         rows = list(reader)
@@ -441,6 +484,7 @@ class TaxSystem:
         source = Path(source).resolve(strict=True)
         text, encoding = _read_csv_text(source)
         reader = csv.DictReader(text.splitlines())
+        reader.fieldnames = _strip_trailing_blank_columns(reader.fieldnames)
         if reader.fieldnames != EXPORT_DATA_COLUMNS:
             raise ValueError(f"輸出データの列が想定と一致しません（{EXPORT_DATA_COLUMNS}）: {reader.fieldnames}")
         rows = list(reader)
