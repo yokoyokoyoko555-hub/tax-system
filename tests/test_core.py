@@ -694,9 +694,10 @@ class MergeLedgerTests(unittest.TestCase):
         _, total = self.app.get_records(result["import_id"])
         self.assertEqual(1, total)
 
-    def test_find_ledger_duplicates_recommends_one_when_rows_are_byte_identical(self):
-        # both rows tie on completeness (both bare) but are otherwise fully identical —
-        # keeping either one loses no information, so one is still safe to recommend.
+    def test_find_ledger_duplicates_no_recommendation_even_when_rows_are_byte_identical(self):
+        # both rows tie on completeness and are otherwise fully identical, but this could
+        # still be two genuinely separate transactions (same product not yet recorded,
+        # same coincidental amount) — never auto-recommend deleting a tie.
         first = self.app.import_ledger(self.write_ledger([
             ["2026-04-01", "A", "", "", "", "", "商品A", "1", "1000", "1000", ""],
         ], "a.csv"))
@@ -706,7 +707,24 @@ class MergeLedgerTests(unittest.TestCase):
         result = self.app.merge_ledger_imports([first, second])
 
         occurrences = self.app.find_ledger_duplicates(result["import_id"])[0]["occurrences"]
-        self.assertEqual(1, sum(1 for o in occurrences if o["recommended_delete"]))
+        self.assertFalse(any(o["recommended_delete"] for o in occurrences))
+
+    def test_dismiss_ledger_duplicate_removes_group_from_list(self):
+        first = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "", "", "", "", "商品A", "1", "1000", "1000", ""],
+        ], "a.csv"))
+        second = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "", "", "", "", "商品A", "1", "1000", "1000", ""],
+        ], "b.csv"))
+        result = self.app.merge_ledger_imports([first, second])
+
+        occurrences = self.app.find_ledger_duplicates(result["import_id"])[0]["occurrences"]
+        self.app.dismiss_ledger_duplicate(result["import_id"], occurrences[0]["row_no"])
+
+        self.assertEqual([], self.app.find_ledger_duplicates(result["import_id"]))
+        # dismissing doesn't delete anything
+        _, total = self.app.get_records(result["import_id"])
+        self.assertEqual(2, total)
 
     def test_find_ledger_duplicates_no_recommendation_when_tied_but_different(self):
         # both rows tie on completeness AND actually differ in content (different

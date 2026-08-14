@@ -128,6 +128,15 @@ def create_app(home: str | Path | None = None) -> Flask:
             flash("削除対象の重複行はありませんでした", "success")
         return redirect(url_for("library_view", kind="ledger"))
 
+    @app.route("/ledger-duplicates/dismiss", methods=["POST"])
+    def ledger_duplicate_dismiss():
+        ts = system()
+        import_id = int(request.form["import_id"])
+        row_no = int(request.form["row_no"])
+        ts.dismiss_ledger_duplicate(import_id, row_no)
+        flash("重複ではないものとして、この組み合わせを一覧から外しました", "success")
+        return redirect(url_for("library_view", kind="ledger"))
+
     @app.route("/templates/new", methods=["GET", "POST"])
     def new_template():
         if request.method == "POST":
