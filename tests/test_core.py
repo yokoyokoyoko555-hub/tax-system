@@ -664,6 +664,69 @@ class MergeLedgerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.app.auto_merge_ledger_imports()
 
+    def test_find_ledger_duplicates_and_delete_one(self):
+        # same transaction recorded in two different raw sources (e.g. POS export and
+        # identity-verification data): 日時・名前・商品名・個数・金額 match, but one row
+        # carries extra identity fields the other lacks — this must NOT be silently lost.
+        first = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "", "", "", "", "商品A", "1", "1000", "1000", ""],
+        ], "a.csv"))
+        second = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "えー", "1990-01-01", "住所A", "000", "商品A", "1", "1000", "1000", ""],
+        ], "b.csv"))
+        result = self.app.merge_ledger_imports([first, second])
+        self.assertEqual(1, len(result["duplicates"]))
+
+        duplicates = self.app.find_ledger_duplicates(result["import_id"])
+        self.assertEqual(1, len(duplicates))
+        occurrences = duplicates[0]["occurrences"]
+        self.assertEqual(2, len(occurrences))
+
+        # the row with no identity details is recommended for deletion, the fuller one is not
+        bare_row = next(o for o in occurrences if not o["data"]["ふりがな"])
+        full_row = next(o for o in occurrences if o["data"]["ふりがな"])
+        self.assertTrue(bare_row["recommended_delete"])
+        self.assertFalse(full_row["recommended_delete"])
+
+        self.app.delete_ledger_record(result["import_id"], bare_row["row_no"])
+
+        self.assertEqual([], self.app.find_ledger_duplicates(result["import_id"]))
+        _, total = self.app.get_records(result["import_id"])
+        self.assertEqual(1, total)
+
+    def test_find_ledger_duplicates_no_recommendation_when_tied(self):
+        # both rows have identical completeness (both bare) — no clear winner, so
+        # neither should be auto-flagged for deletion; a human has to decide.
+        first = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "", "", "", "", "商品A", "1", "1000", "1000", ""],
+        ], "a.csv"))
+        second = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "", "", "", "", "商品A", "1", "1000", "1000", ""],
+        ], "b.csv"))
+        result = self.app.merge_ledger_imports([first, second])
+
+        occurrences = self.app.find_ledger_duplicates(result["import_id"])[0]["occurrences"]
+        self.assertFalse(any(o["recommended_delete"] for o in occurrences))
+
+    def test_delete_recommended_ledger_duplicates_bulk(self):
+        first = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "", "", "", "", "商品A", "1", "1000", "1000", ""],
+            ["2026-04-02", "B", "", "", "", "", "商品B", "1", "2000", "2000", ""],
+        ], "a.csv"))
+        second = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "えー", "1990-01-01", "住所A", "000", "商品A", "1", "1000", "1000", ""],
+            ["2026-04-02", "B", "びー", "1991-01-01", "住所B", "000", "商品B", "1", "2000", "2000", ""],
+        ], "b.csv"))
+        result = self.app.merge_ledger_imports([first, second])
+        self.assertEqual(2, len(result["duplicates"]))
+
+        deleted = self.app.delete_recommended_ledger_duplicates(result["import_id"])
+
+        self.assertEqual(2, deleted)
+        self.assertEqual([], self.app.find_ledger_duplicates(result["import_id"]))
+        _, total = self.app.get_records(result["import_id"])
+        self.assertEqual(2, total)
+
 
 class SuggestLedgerItemsTests(unittest.TestCase):
     def test_returns_none_without_api_key(self):

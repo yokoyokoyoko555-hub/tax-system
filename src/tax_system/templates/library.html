@@ -4,6 +4,50 @@
 <h1>{{ kind_labels[kind] }}</h1>
 
 {% if kind == "ledger" %}
+  {% if ledger_duplicates %}
+  <section class="card level-error">
+    <h2>重複の可能性がある行（{{ ledger_duplicates|length }}件）</h2>
+    <p class="lead">
+      結合済みの古物台帳（取込ID {{ merged.id }}）の中で、日時・名前・商品名・個数・金額が
+      完全に一致する行が見つかりました。同じ取引が複数の元データ（POS取引と本人確認データなど）に
+      記録されていた場合などに起こります。金額が二重に計上されている状態なので、確認のうえ
+      片方を削除することをおすすめします。<br>
+      本人確認情報（ふりがな・住所・電話番号など）が少ない方に「削除推奨」を付けています。
+      両方の情報量が同じ場合は推奨を付けていないので、内容を見て判断してください。
+    </p>
+    <form method="post" action="{{ url_for('ledger_duplicate_delete_all') }}">
+      <input type="hidden" name="import_id" value="{{ merged.id }}">
+      <button type="submit" class="button">削除推奨（情報が少ない方）をまとめて削除する</button>
+    </form>
+    {% for group in ledger_duplicates %}
+    <table style="margin-bottom:1rem;">
+      <thead><tr><th>行</th><th>日時</th><th>名前</th><th>ふりがな</th><th>住所</th><th>電話番号</th><th>金額</th><th>状態</th><th></th></tr></thead>
+      <tbody>
+        {% for occ in group.occurrences %}
+        <tr class="{{ 'level-error' if occ.recommended_delete else '' }}">
+          <td>{{ occ.row_no }}</td>
+          <td>{{ occ.data['日時'] }}</td>
+          <td>{{ occ.data['名前'] }}</td>
+          <td>{{ occ.data['ふりがな'] }}</td>
+          <td>{{ occ.data['住所'] }}</td>
+          <td>{{ occ.data['電話番号'] }}</td>
+          <td>{{ occ.data['金額'] | num }}</td>
+          <td>{{ "削除推奨（情報少）" if occ.recommended_delete else "" }}</td>
+          <td>
+            <form method="post" action="{{ url_for('ledger_duplicate_delete') }}" style="display:inline;">
+              <input type="hidden" name="import_id" value="{{ merged.id }}">
+              <input type="hidden" name="row_no" value="{{ occ.row_no }}">
+              <button type="submit" class="button small">この行を削除</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endfor %}
+  </section>
+  {% endif %}
+
   {% if merged and months %}
   <section class="card">
     <h2>月ごとに見る</h2>

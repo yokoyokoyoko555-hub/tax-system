@@ -1198,6 +1198,50 @@ class TaxSystem:
         with closing(self.connect()) as db, db:
             db.execute("DELETE FROM ledger_items WHERE id=? AND source='manual'", (item_id,))
 
+    def find_ledger_duplicates(self, ledger_import_id: int) -> list[dict[str, Any]]:
+        """指定した古物台帳の取込（通常は結合済みのもの）の中で、日時・名前・商品名・
+        個数・金額が完全に一致する行をまとめる。結合の際にも重複候補として報告されるが、
+        取込直後に見落とした場合や、後から見直したい場合のためにいつでも確認できるようにする。
+        本人確認情報（ふりがな・生年月日・住所・電話番号）がより多く埋まっている方を残す候補とし、
+        情報が少ない方に削除推奨を付ける（同数の場合はどちらも推奨しない＝人が判断する）。
+        """
+        with closing(self.connect()) as db, db:
+            rows = db.execute(
+                "SELECT row_no, data_json FROM records WHERE import_id=? ORDER BY row_no", (ledger_import_id,)
+            ).fetchall()
+        groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+        for row in rows:
+            data = json.loads(row["data_json"])
+            key = tuple(data.get(k) for k in ("日時", "名前", "商品名", "個数", "金額"))
+            completeness = sum(1 for f in ("ふりがな", "生年月日", "住所", "電話番号") if data.get(f))
+            groups.setdefault(key, []).append({"row_no": row["row_no"], "data": data, "completeness": completeness})
+        results = []
+        for occurrences in groups.values():
+            if len(occurrences) < 2:
+                continue
+            best = max(o["completeness"] for o in occurrences)
+            clear_winner = sum(1 for o in occurrences if o["completeness"] == best) == 1
+            for o in occurrences:
+                o["recommended_delete"] = clear_winner and o["completeness"] < best
+            results.append({"occurrences": occurrences})
+        return results
+
+    def delete_ledger_record(self, import_id: int, row_no: int) -> None:
+        with closing(self.connect()) as db, db:
+            db.execute("DELETE FROM ledger_items WHERE ledger_import_id=? AND ledger_row_no=?", (import_id, row_no))
+            db.execute("DELETE FROM records WHERE import_id=? AND row_no=?", (import_id, row_no))
+
+    def delete_recommended_ledger_duplicates(self, ledger_import_id: int) -> int:
+        """find_ledger_duplicates() で削除推奨となった行をまとめて削除する。"""
+        targets = [
+            o["row_no"]
+            for group in self.find_ledger_duplicates(ledger_import_id)
+            for o in group["occurrences"] if o["recommended_delete"]
+        ]
+        for row_no in targets:
+            self.delete_ledger_record(ledger_import_id, row_no)
+        return len(targets)
+
     def delete_import(self, import_id: int) -> None:
         """取込を削除する（誤って同じファイルを2回取り込んだ場合などの手動クリーンアップ用）。
         紐づく明細・手動内訳・仕入対応も合わせて削除する。過去の出力履歴（exports）は

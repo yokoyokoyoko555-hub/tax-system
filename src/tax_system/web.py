@@ -65,6 +65,7 @@ def create_app(home: str | Path | None = None) -> Flask:
             imports.sort(key=lambda imp: (imp["as_of"] is None, imp["as_of"] or ""))
         merged = ts.latest_merged_ledger_import() if kind == "ledger" else None
         months = ts.month_summary(merged["id"]) if merged else []
+        ledger_duplicates = ts.find_ledger_duplicates(merged["id"]) if merged else None
         comparison_months = None
         duplicates = None
         if kind == "comparison":
@@ -72,6 +73,7 @@ def create_app(home: str | Path | None = None) -> Flask:
             duplicates = ts.find_comparison_duplicates()
         return render_template(
             "library.html", kind=kind, imports=imports, merged=merged, months=months,
+            ledger_duplicates=ledger_duplicates,
             comparison_months=comparison_months, duplicates=duplicates,
         )
 
@@ -105,6 +107,26 @@ def create_app(home: str | Path | None = None) -> Flask:
         else:
             flash("削除対象の重複行はありませんでした", "success")
         return redirect(url_for("library_view", kind="comparison"))
+
+    @app.route("/ledger-duplicates/delete", methods=["POST"])
+    def ledger_duplicate_delete():
+        ts = system()
+        import_id = int(request.form["import_id"])
+        row_no = int(request.form["row_no"])
+        ts.delete_ledger_record(import_id, row_no)
+        flash("行を削除しました", "success")
+        return redirect(url_for("library_view", kind="ledger"))
+
+    @app.route("/ledger-duplicates/delete-all", methods=["POST"])
+    def ledger_duplicate_delete_all():
+        ts = system()
+        import_id = int(request.form["import_id"])
+        count = ts.delete_recommended_ledger_duplicates(import_id)
+        if count:
+            flash(f"削除推奨（情報が少ない方）の行を{count}件まとめて削除しました", "success")
+        else:
+            flash("削除対象の重複行はありませんでした", "success")
+        return redirect(url_for("library_view", kind="ledger"))
 
     @app.route("/templates/new", methods=["GET", "POST"])
     def new_template():
@@ -149,9 +171,15 @@ def create_app(home: str | Path | None = None) -> Flask:
                         results.append({"filename": upload.filename, "ok": False, "error": str(exc)})
             if any(r.get("ok") and r.get("kind") == "ledger" for r in results):
                 try:
-                    ts.auto_merge_ledger_imports()
+                    merge_result = ts.auto_merge_ledger_imports()
                 except ValueError:
                     pass  # fewer than 2 raw ledger imports exist yet — nothing to merge
+                else:
+                    if merge_result["duplicates"]:
+                        flash(
+                            f"古物台帳を結合しました（重複の可能性がある行が{len(merge_result['duplicates'])}件あります。"
+                            "内容を確認してください）", "error",
+                        )
             return render_template("import_result.html", results=results)
         return render_template("new_import.html")
 
