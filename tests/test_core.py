@@ -802,6 +802,50 @@ class MergeLedgerTests(unittest.TestCase):
         _, total = self.app.get_records(result["import_id"])
         self.assertEqual(2, total)
 
+    def test_deleted_ledger_duplicate_does_not_reappear_after_re_merge(self):
+        # auto_merge_ledger_imports() re-derives a brand-new merged import from ALL raw
+        # imports every time (by design, to include newly-added files) — so deleting a
+        # duplicate only from the merged copy would let it resurface on the next merge.
+        # delete_ledger_record must also remove the matching row from its raw source.
+        first = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "", "", "", "", "商品A", "1", "1000", "1000", ""],
+        ], "a.csv"))
+        second = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "えー", "1990-01-01", "住所A", "000", "商品A", "1", "1000", "1000", ""],
+        ], "b.csv"))
+        first_merge = self.app.merge_ledger_imports([first, second])
+        occurrences = self.app.find_ledger_duplicates(first_merge["import_id"])[0]["occurrences"]
+        bare_row = next(o for o in occurrences if not o["data"]["ふりがな"])
+        self.app.delete_ledger_record(first_merge["import_id"], bare_row["row_no"])
+
+        # a new, unrelated raw import triggers a fresh re-merge from ALL raw imports
+        third = self.app.import_ledger(self.write_ledger([
+            ["2026-05-01", "C", "しー", "1992-01-01", "住所C", "000", "商品C", "1", "3000", "3000", ""],
+        ], "c.csv"))
+        second_merge = self.app.merge_ledger_imports([first, second, third])
+
+        self.assertEqual([], self.app.find_ledger_duplicates(second_merge["import_id"]))
+        _, total = self.app.get_records(second_merge["import_id"])
+        self.assertEqual(2, total)  # the kept duplicate row + the new unrelated row, not 3
+
+    def test_dismissed_ledger_duplicate_stays_dismissed_after_re_merge(self):
+        first = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "", "", "", "", "商品A", "1", "1000", "1000", ""],
+        ], "a.csv"))
+        second = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "", "", "", "", "商品A", "1", "1000", "1000", ""],
+        ], "b.csv"))
+        first_merge = self.app.merge_ledger_imports([first, second])
+        occurrences = self.app.find_ledger_duplicates(first_merge["import_id"])[0]["occurrences"]
+        self.app.dismiss_ledger_duplicate(first_merge["import_id"], occurrences[0]["row_no"])
+
+        third = self.app.import_ledger(self.write_ledger([
+            ["2026-05-01", "C", "しー", "1992-01-01", "住所C", "000", "商品C", "1", "3000", "3000", ""],
+        ], "c.csv"))
+        second_merge = self.app.merge_ledger_imports([first, second, third])
+
+        self.assertEqual([], self.app.find_ledger_duplicates(second_merge["import_id"]))
+
 
 class SuggestLedgerItemsTests(unittest.TestCase):
     def test_returns_none_without_api_key(self):

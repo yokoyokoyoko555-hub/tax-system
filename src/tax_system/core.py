@@ -217,6 +217,7 @@ class TaxSystem:
                   id INTEGER PRIMARY KEY, import_id INTEGER NOT NULL REFERENCES imports(id),
                   sheet_name TEXT, row_no INTEGER NOT NULL, data_json TEXT NOT NULL
                 );
+                CREATE INDEX IF NOT EXISTS idx_records_data_json ON records(data_json);
                 CREATE TABLE IF NOT EXISTS exports(
                   id INTEGER PRIMARY KEY, import_id INTEGER NOT NULL, template_id INTEGER,
                   mode TEXT NOT NULL, output_name TEXT NOT NULL, output_sha256 TEXT NOT NULL,
@@ -234,11 +235,19 @@ class TaxSystem:
                   source TEXT NOT NULL, created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS ledger_duplicate_dismissals(
-                  import_id INTEGER NOT NULL, key_json TEXT NOT NULL, created_at TEXT NOT NULL,
-                  PRIMARY KEY(import_id, key_json)
+                  key_json TEXT PRIMARY KEY, created_at TEXT NOT NULL
                 );
                 """
             )
+            # 古物台帳は取込のたびに全ての生データから結合し直す（取込IDが変わる）ため、
+            # 重複の「残す」判定は取込IDに紐づけず内容（key_json）だけで判定するように
+            # 変更した。旧スキーマ（import_id列あり）が残っていれば作り直す。
+            cols = {r["name"] for r in db.execute("PRAGMA table_info(ledger_duplicate_dismissals)").fetchall()}
+            if "import_id" in cols:
+                db.execute("DROP TABLE ledger_duplicate_dismissals")
+                db.execute(
+                    "CREATE TABLE ledger_duplicate_dismissals(key_json TEXT PRIMARY KEY, created_at TEXT NOT NULL)"
+                )
 
     def connect(self) -> sqlite3.Connection:
         self.home.mkdir(parents=True, exist_ok=True)
@@ -1266,16 +1275,16 @@ class TaxSystem:
         （＝どちらを残しても情報が減らない）1件だけ残して削除推奨を付ける。情報量が同じで
         中身にも違いがある場合のみ、どちらも推奨しない＝人が判断する。
         いずれの場合も「残す（重複ではない）」を選べば、削除推奨に関わらず次回以降ここに
-        出てこないようにできる（同額・別商品の取引を偶然2回行った、など）。
+        出てこないようにできる（同額・別商品の取引を偶然2回行った、など）。「残す」は取込内容
+        （日時・名前・商品名・個数・金額）そのものに対する判断として保存するため、古物台帳を
+        再取込・再結合しても判断は引き継がれる。
         """
         with closing(self.connect()) as db, db:
             rows = db.execute(
                 "SELECT row_no, data_json FROM records WHERE import_id=? ORDER BY row_no", (ledger_import_id,)
             ).fetchall()
             dismissed = {
-                r["key_json"] for r in db.execute(
-                    "SELECT key_json FROM ledger_duplicate_dismissals WHERE import_id=?", (ledger_import_id,)
-                ).fetchall()
+                r["key_json"] for r in db.execute("SELECT key_json FROM ledger_duplicate_dismissals").fetchall()
             }
         groups: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
@@ -1303,7 +1312,8 @@ class TaxSystem:
 
     def dismiss_ledger_duplicate(self, import_id: int, row_no: int) -> None:
         """この行が属する重複候補グループを「重複ではない（両方残す）」として、
-        以後 find_ledger_duplicates の一覧に出てこないようにする。
+        以後 find_ledger_duplicates の一覧に出てこないようにする。取込内容そのものに
+        対する判断として保存するため、古物台帳を再取込・再結合しても引き継がれる。
         """
         with closing(self.connect()) as db, db:
             row = db.execute(
@@ -1314,14 +1324,44 @@ class TaxSystem:
             key = self._ledger_duplicate_key(json.loads(row["data_json"]))
             now = datetime.now().isoformat(timespec="seconds")
             db.execute(
-                "INSERT OR IGNORE INTO ledger_duplicate_dismissals(import_id, key_json, created_at) VALUES(?,?,?)",
-                (import_id, key, now),
+                "INSERT OR IGNORE INTO ledger_duplicate_dismissals(key_json, created_at) VALUES(?,?)",
+                (key, now),
             )
 
     def delete_ledger_record(self, import_id: int, row_no: int) -> None:
+        """古物台帳の行を削除する。結合済みの取込は取込のたびに元データから作り直される
+        ため、結合後の行を消すだけでは次の再結合で同じ行がまた現れてしまう。そこで、
+        内容が完全に一致する行を元の生データ（未結合の取込）側からも1件だけ探して
+        一緒に削除し、再結合しても復活しないようにする。
+        """
         with closing(self.connect()) as db, db:
+            row = db.execute(
+                "SELECT data_json FROM records WHERE import_id=? AND row_no=?", (import_id, row_no)
+            ).fetchone()
             db.execute("DELETE FROM ledger_items WHERE ledger_import_id=? AND ledger_row_no=?", (import_id, row_no))
             db.execute("DELETE FROM records WHERE import_id=? AND row_no=?", (import_id, row_no))
+            if row is None:
+                return
+            raw_import_ids = [
+                r["id"] for r in db.execute("SELECT id, metadata_json FROM imports WHERE kind='ledger'").fetchall()
+                if json.loads(r["metadata_json"]).get("source_format") != "merged"
+            ]
+            if not raw_import_ids:
+                return
+            placeholders = ",".join("?" * len(raw_import_ids))
+            match = db.execute(
+                f"SELECT import_id, row_no FROM records WHERE import_id IN ({placeholders}) AND data_json=? LIMIT 1",
+                raw_import_ids + [row["data_json"]],
+            ).fetchone()
+            if match:
+                db.execute(
+                    "DELETE FROM ledger_items WHERE ledger_import_id=? AND ledger_row_no=?",
+                    (match["import_id"], match["row_no"]),
+                )
+                db.execute(
+                    "DELETE FROM records WHERE import_id=? AND row_no=?",
+                    (match["import_id"], match["row_no"]),
+                )
 
     def delete_recommended_ledger_duplicates(self, ledger_import_id: int) -> int:
         """find_ledger_duplicates() で削除推奨となった行をまとめて削除する。"""
