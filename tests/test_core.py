@@ -694,10 +694,10 @@ class MergeLedgerTests(unittest.TestCase):
         _, total = self.app.get_records(result["import_id"])
         self.assertEqual(1, total)
 
-    def test_find_ledger_duplicates_no_recommendation_even_when_rows_are_byte_identical(self):
-        # both rows tie on completeness and are otherwise fully identical, but this could
-        # still be two genuinely separate transactions (same product not yet recorded,
-        # same coincidental amount) — never auto-recommend deleting a tie.
+    def test_find_ledger_duplicates_recommends_one_when_rows_are_byte_identical(self):
+        # both rows tie on completeness but are otherwise fully identical — keeping
+        # either one loses no information, so one is recommended for deletion. The user
+        # can still override with dismiss_ledger_duplicate if it's a real coincidence.
         first = self.app.import_ledger(self.write_ledger([
             ["2026-04-01", "A", "", "", "", "", "商品A", "1", "1000", "1000", ""],
         ], "a.csv"))
@@ -707,9 +707,11 @@ class MergeLedgerTests(unittest.TestCase):
         result = self.app.merge_ledger_imports([first, second])
 
         occurrences = self.app.find_ledger_duplicates(result["import_id"])[0]["occurrences"]
-        self.assertFalse(any(o["recommended_delete"] for o in occurrences))
+        self.assertEqual(1, sum(1 for o in occurrences if o["recommended_delete"]))
 
-    def test_dismiss_ledger_duplicate_removes_group_from_list(self):
+    def test_dismiss_ledger_duplicate_overrides_recommendation(self):
+        # even a row the system recommends deleting can be kept: dismissing the group
+        # removes it from the list entirely, regardless of any recommendation.
         first = self.app.import_ledger(self.write_ledger([
             ["2026-04-01", "A", "", "", "", "", "商品A", "1", "1000", "1000", ""],
         ], "a.csv"))
@@ -719,6 +721,7 @@ class MergeLedgerTests(unittest.TestCase):
         result = self.app.merge_ledger_imports([first, second])
 
         occurrences = self.app.find_ledger_duplicates(result["import_id"])[0]["occurrences"]
+        self.assertTrue(any(o["recommended_delete"] for o in occurrences))
         self.app.dismiss_ledger_duplicate(result["import_id"], occurrences[0]["row_no"])
 
         self.assertEqual([], self.app.find_ledger_duplicates(result["import_id"]))
