@@ -6,7 +6,7 @@
 {% if kind == "ledger" %}
   {% if ledger_duplicates %}
   <section class="card level-error">
-    <h2>重複の可能性がある行（{{ ledger_duplicates|length }}件）</h2>
+    <h2>重複の可能性がある行（{{ ledger_dup_total }}件）</h2>
     <p class="lead">
       結合済みの古物台帳（取込ID {{ merged.id }}）の中で、日時・名前・商品名・個数・金額が
       完全に一致する行が見つかりました（商品名・個数も一致しているものだけを重複としています。
@@ -17,11 +17,13 @@
       「削除推奨」を付けています。情報量が同じで内容にも違いがある場合のみ推奨を付けていません。<br>
       ただし削除推奨はあくまで参考です。同額・別商品の取引を偶然2回行った可能性もあるため、
       内容を確認し、重複ではないと判断したら削除推奨に関わらず「残す（重複ではない）」で
-      一覧から外してください（自動では削除されません）。
+      一覧から外してください（自動では削除されません）。<br>
+      件数が多い場合、下の一覧は{{ ledger_dup_total_pages }}ページに分けて表示しています。
+      「まとめて削除する」は表示中のページだけでなく、削除推奨の全件に対して実行されます。
     </p>
     <form method="post" action="{{ url_for('ledger_duplicate_delete_all') }}">
       <input type="hidden" name="import_id" value="{{ merged.id }}">
-      <button type="submit" class="button">削除推奨（情報が少ない方）をまとめて削除する</button>
+      <button type="submit" class="button">削除推奨（情報が少ない方）をまとめて削除する（全{{ ledger_dup_total }}件が対象）</button>
     </form>
     {% for group in ledger_duplicates %}
     <table style="margin-bottom:0.25rem;">
@@ -56,6 +58,13 @@
       <button type="submit" class="button small">残す（重複ではない・両方とも消さない）</button>
     </form>
     {% endfor %}
+    {% if ledger_dup_total_pages > 1 %}
+    <p class="muted">
+      {% if ledger_dup_page > 1 %}<a href="{{ url_for('library_view', kind='ledger', dup_page=ledger_dup_page-1) }}">← 前へ</a>{% endif %}
+      {{ ledger_dup_page }} / {{ ledger_dup_total_pages }} ページ
+      {% if ledger_dup_page < ledger_dup_total_pages %}<a href="{{ url_for('library_view', kind='ledger', dup_page=ledger_dup_page+1) }}">次へ →</a>{% endif %}
+    </p>
+    {% endif %}
   </section>
   {% endif %}
 

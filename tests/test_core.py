@@ -819,6 +819,31 @@ class MergeLedgerTests(unittest.TestCase):
         _, total = self.app.get_records(result["import_id"])
         self.assertEqual(2, total)
 
+    def test_delete_recommended_ledger_duplicates_bulk_crosses_chunk_boundary(self):
+        # delete_recommended_ledger_duplicates batches its SQL in chunks of 500 targets
+        # to stay well under SQLite's bound-parameter limit; use more than that to make
+        # sure results spanning multiple chunks are still all correctly removed.
+        n = 600
+        bare_rows = [
+            [f"2026-04-{(i % 27) + 1:02d}", f"Person{i}", "", "", "", "", f"商品{i}", "1", "1000", "1000", ""]
+            for i in range(n)
+        ]
+        full_rows = [
+            [f"2026-04-{(i % 27) + 1:02d}", f"Person{i}", "えー", "1990-01-01", "住所", "000", f"商品{i}", "1", "1000", "1000", ""]
+            for i in range(n)
+        ]
+        first = self.app.import_ledger(self.write_ledger(bare_rows, "a.csv"))
+        second = self.app.import_ledger(self.write_ledger(full_rows, "b.csv"))
+        result = self.app.merge_ledger_imports([first, second])
+        self.assertEqual(n, len(result["duplicates"]))
+
+        deleted = self.app.delete_recommended_ledger_duplicates(result["import_id"])
+
+        self.assertEqual(n, deleted)
+        self.assertEqual([], self.app.find_ledger_duplicates(result["import_id"]))
+        _, total = self.app.get_records(result["import_id"])
+        self.assertEqual(n, total)
+
     def test_deleted_ledger_duplicate_does_not_reappear_after_re_merge(self):
         # auto_merge_ledger_imports() re-derives a brand-new merged import from ALL raw
         # imports every time (by design, to include newly-added files) — so deleting a

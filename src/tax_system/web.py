@@ -76,7 +76,15 @@ def create_app(home: str | Path | None = None) -> Flask:
             imports.sort(key=lambda imp: (imp["as_of"] is None, imp["as_of"] or ""))
         merged = ts.latest_merged_ledger_import() if kind == "ledger" else None
         months = ts.month_summary(merged["id"]) if merged else []
-        ledger_duplicates = ts.find_ledger_duplicates(merged["id"]) if merged else None
+        ledger_duplicates_all = ts.find_ledger_duplicates(merged["id"]) if merged else None
+        ledger_duplicates = None
+        ledger_dup_page = ledger_dup_total_pages = 1
+        if ledger_duplicates_all is not None:
+            dup_page_size = 30
+            ledger_dup_page = max(1, request.args.get("dup_page", 1, type=int))
+            ledger_dup_total_pages = max(1, -(-len(ledger_duplicates_all) // dup_page_size))
+            start = (ledger_dup_page - 1) * dup_page_size
+            ledger_duplicates = ledger_duplicates_all[start:start + dup_page_size]
         comparison_months = None
         duplicates = None
         if kind == "comparison":
@@ -84,7 +92,8 @@ def create_app(home: str | Path | None = None) -> Flask:
             duplicates = ts.find_comparison_duplicates()
         return render_template(
             "library.html", kind=kind, imports=imports, merged=merged, months=months,
-            ledger_duplicates=ledger_duplicates,
+            ledger_duplicates=ledger_duplicates, ledger_dup_total=len(ledger_duplicates_all or []),
+            ledger_dup_page=ledger_dup_page, ledger_dup_total_pages=ledger_dup_total_pages,
             comparison_months=comparison_months, duplicates=duplicates,
         )
 

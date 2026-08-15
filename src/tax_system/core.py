@@ -218,6 +218,7 @@ class TaxSystem:
                   sheet_name TEXT, row_no INTEGER NOT NULL, data_json TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_records_data_json ON records(data_json);
+                CREATE INDEX IF NOT EXISTS idx_records_import_row ON records(import_id, row_no);
                 CREATE TABLE IF NOT EXISTS exports(
                   id INTEGER PRIMARY KEY, import_id INTEGER NOT NULL, template_id INTEGER,
                   mode TEXT NOT NULL, output_name TEXT NOT NULL, output_sha256 TEXT NOT NULL,
@@ -234,6 +235,7 @@ class TaxSystem:
                   product TEXT NOT NULL, qty REAL NOT NULL, unit_cost REAL NOT NULL, amount REAL NOT NULL,
                   source TEXT NOT NULL, created_at TEXT NOT NULL
                 );
+                CREATE INDEX IF NOT EXISTS idx_ledger_items_import_row ON ledger_items(ledger_import_id, ledger_row_no);
                 CREATE TABLE IF NOT EXISTS ledger_duplicate_dismissals(
                   key_json TEXT PRIMARY KEY, created_at TEXT NOT NULL
                 );
@@ -1372,14 +1374,59 @@ class TaxSystem:
                 )
 
     def delete_recommended_ledger_duplicates(self, ledger_import_id: int) -> int:
-        """find_ledger_duplicates() で削除推奨となった行をまとめて削除する。"""
+        """find_ledger_duplicates() で削除推奨となった行をまとめて削除する。
+        件数が数千件になることがあるため、delete_ledger_record を1件ずつ呼ぶ
+        （＝取込・コミットのたびに接続し直す）のではなく、1つの接続・トランザクションの
+        中でまとめて処理する。
+        """
         targets = [
             o["row_no"]
             for group in self.find_ledger_duplicates(ledger_import_id)
             for o in group["occurrences"] if o["recommended_delete"]
         ]
-        for row_no in targets:
-            self.delete_ledger_record(ledger_import_id, row_no)
+        if not targets:
+            return 0
+        chunk_size = 500
+        chunks = [targets[i:i + chunk_size] for i in range(0, len(targets), chunk_size)]
+        with closing(self.connect()) as db, db:
+            data_jsons: list[str] = []
+            for chunk in chunks:
+                placeholders = ",".join("?" * len(chunk))
+                rows = db.execute(
+                    f"SELECT data_json FROM records WHERE import_id=? AND row_no IN ({placeholders})",
+                    [ledger_import_id, *chunk],
+                ).fetchall()
+                data_jsons.extend(r["data_json"] for r in rows)
+                db.execute(
+                    f"DELETE FROM ledger_items WHERE ledger_import_id=? AND ledger_row_no IN ({placeholders})",
+                    [ledger_import_id, *chunk],
+                )
+                db.execute(
+                    f"DELETE FROM records WHERE import_id=? AND row_no IN ({placeholders})",
+                    [ledger_import_id, *chunk],
+                )
+
+            raw_import_ids = [
+                r["id"] for r in db.execute("SELECT id, metadata_json FROM imports WHERE kind='ledger'").fetchall()
+                if json.loads(r["metadata_json"]).get("source_format") != "merged"
+            ]
+            if raw_import_ids:
+                raw_placeholders = ",".join("?" * len(raw_import_ids))
+                for data_json in data_jsons:
+                    match = db.execute(
+                        f"SELECT import_id, row_no FROM records WHERE import_id IN ({raw_placeholders}) "
+                        "AND data_json=? LIMIT 1",
+                        [*raw_import_ids, data_json],
+                    ).fetchone()
+                    if match:
+                        db.execute(
+                            "DELETE FROM ledger_items WHERE ledger_import_id=? AND ledger_row_no=?",
+                            (match["import_id"], match["row_no"]),
+                        )
+                        db.execute(
+                            "DELETE FROM records WHERE import_id=? AND row_no=?",
+                            (match["import_id"], match["row_no"]),
+                        )
         return len(targets)
 
     def delete_import(self, import_id: int) -> None:
