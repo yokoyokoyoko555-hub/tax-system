@@ -1280,7 +1280,7 @@ class TaxSystem:
         """指定した古物台帳の取込（通常は結合済みのもの）の中で、日時・名前・商品名・
         個数・金額が完全に一致する行をまとめる。結合の際にも重複候補として報告されるが、
         取込直後に見落とした場合や、後から見直したい場合のためにいつでも確認できるようにする。
-        本人確認情報（ふりがな・生年月日・住所・電話番号）がより多く埋まっている方を残す候補とし、
+        本人確認情報（ふりがな・生年月日・住所・電話番号）や備考がより多く埋まっている方を残す候補とし、
         情報が少ない方に削除推奨を付ける。情報量が同じでも行の中身が完全に一致するなら
         （＝どちらを残しても情報が減らない）1件だけ残して削除推奨を付ける。情報量が同じで
         中身にも違いがある場合のみ、どちらも推奨しない＝人が判断する。
@@ -1300,7 +1300,7 @@ class TaxSystem:
         for row in rows:
             data = json.loads(row["data_json"])
             key = self._ledger_duplicate_key(data)
-            completeness = sum(1 for f in ("ふりがな", "生年月日", "住所", "電話番号") if data.get(f))
+            completeness = sum(1 for f in ("ふりがな", "生年月日", "住所", "電話番号", "備考") if data.get(f))
             groups.setdefault(key, []).append({"row_no": row["row_no"], "data": data, "completeness": completeness})
         results = []
         for key, occurrences in groups.items():

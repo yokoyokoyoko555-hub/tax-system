@@ -789,6 +789,23 @@ class MergeLedgerTests(unittest.TestCase):
         self.assertEqual(1, len(kept))
         self.assertTrue(all(o["data"]["ふりがな"] for o in kept))
 
+    def test_find_ledger_duplicates_prefers_row_with_remarks(self):
+        # rows identical in every field except 備考 (a note added during processing) —
+        # the blank one should be recommended for deletion, keeping the annotated one.
+        blank_note = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "えー", "1990-01-01", "住所A", "000", "商品A", "1", "1000", "1000", ""],
+        ], "a.csv"))
+        with_note = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "えー", "1990-01-01", "住所A", "000", "商品A", "1", "1000", "1000", "300*5400*21100*19"],
+        ], "b.csv"))
+        result = self.app.merge_ledger_imports([blank_note, with_note])
+
+        occurrences = self.app.find_ledger_duplicates(result["import_id"])[0]["occurrences"]
+        recommended = next(o for o in occurrences if o["recommended_delete"])
+        kept = next(o for o in occurrences if not o["recommended_delete"])
+        self.assertEqual("", recommended["data"]["備考"])
+        self.assertEqual("300*5400*21100*19", kept["data"]["備考"])
+
     def test_dismiss_ledger_duplicate_overrides_recommendation(self):
         # even a row the system recommends deleting can be kept: dismissing the group
         # removes it from the list entirely, regardless of any recommendation.
