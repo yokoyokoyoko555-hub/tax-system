@@ -3,8 +3,14 @@
 {% block content %}
 <h1>相対表 {{ month }}</h1>
 <p class="lead">
-  すべての取込を横断して、{{ month }} の販売分をまとめて表示しています。全 {{ total }} 件。
+  すべての取込を横断して、{{ month }} の販売分をまとめて表示しています。全 {{ total }} 件。<br>
+  仕入側（年月日・単価・数量・代価・相手方名・備考）が空欄の行は、商品の特徴が完全に一致する
+  古物台帳の購入記録があれば自動で埋められます。
 </p>
+<form method="post" action="{{ url_for('comparison_fill_purchase') }}" style="margin-bottom:1.5rem;">
+  <input type="hidden" name="month" value="{{ month }}">
+  <button type="submit" class="button">古物台帳から仕入側を埋める（この月）</button>
+</form>
 
 <div class="card" style="overflow-x:auto;">
   <table>

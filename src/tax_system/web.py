@@ -118,6 +118,22 @@ def create_app(home: str | Path | None = None) -> Flask:
         flash("行を削除しました", "success")
         return redirect(url_for("library_view", kind="comparison"))
 
+    @app.route("/comparison/fill-purchase", methods=["POST"])
+    def comparison_fill_purchase():
+        ts = system()
+        month = request.form.get("month") or None
+        result = ts.fill_comparison_purchase_from_ledger(month=month)
+        if result["filled"]:
+            flash(
+                f"古物台帳から仕入側を{result['filled']}件埋めました"
+                f"（一致する古物台帳が見つからなかったのは{result['not_found']}件です）", "success",
+            )
+        else:
+            flash(f"埋められる行はありませんでした（{result['not_found']}件は一致する古物台帳が見つかりませんでした）", "success")
+        if month:
+            return redirect(url_for("comparison_month_view", month=month))
+        return redirect(url_for("library_view", kind="comparison"))
+
     @app.route("/comparison-duplicates/delete-all", methods=["POST"])
     def comparison_duplicate_delete_all():
         ts = system()

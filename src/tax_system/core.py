@@ -1680,6 +1680,138 @@ class TaxSystem:
                 )
         return {"import_id": import_id, "total": len(rows_out), "unmatched": unmatched}
 
+    def fill_comparison_purchase_from_ledger(self, month: str | None = None) -> dict[str, Any]:
+        """相対表の仕入側（年月日・単価・数量・代価・相手方名・備考）が空欄の行について、
+        対応する古物台帳（結合済みの最新のもの）の購入記録を、商品の特徴（無ければ品目）が
+        完全に一致するものから探し、見つかったものだけ書き戻す。1件の古物台帳記録はどこか
+        一つの販売にしか対応付けない（allocationsテーブルで使用済みを管理し、build_comparison
+        や「仕入との対応」画面と一貫させる）。month（例:"2026-06"）を指定すると、販売側の
+        年月で絞り込む。あいまい一致は行わないため、見つからない行はそのまま空欄で残る。
+        """
+        with closing(self.connect()) as db, db:
+            comparison_rows = db.execute(
+                "SELECT r.import_id, r.sheet_name, r.row_no, r.data_json, i.metadata_json "
+                "FROM records r JOIN imports i ON r.import_id = i.id WHERE i.kind='comparison'"
+            ).fetchall()
+            merged = self.latest_merged_ledger_import()
+            ledger_rows = (
+                db.execute("SELECT id, data_json FROM records WHERE import_id=?", (merged["id"],)).fetchall()
+                if merged else []
+            )
+            other_consumed = {
+                row["ledger_record_id"]
+                for row in db.execute(
+                    "SELECT ledger_record_id FROM allocations WHERE ledger_record_id IS NOT NULL "
+                    "AND status IN ('matched','manual')"
+                ).fetchall()
+            }
+
+        ledger_by_product: dict[str, list[dict[str, Any]]] = {}
+        for row in ledger_rows:
+            if row["id"] in other_consumed:
+                continue
+            data = json.loads(row["data_json"])
+            product = (data.get("商品名") or "").strip()
+            if not product:
+                continue
+            ledger_by_product.setdefault(product, []).append({
+                "id": row["id"], "name": (data.get("名前") or "").strip(),
+                "qty": _to_number(data.get("個数")), "date": _to_date(data.get("日時")),
+                "unit": _to_number(data.get("単価")), "amount": _to_number(data.get("金額")),
+                "note": (data.get("備考") or "").strip(),
+            })
+        for candidates in ledger_by_product.values():
+            candidates.sort(key=lambda c: c["date"] or date.max)
+
+        consumed: set[int] = set()
+        filled = 0
+        not_found = 0
+        now = datetime.now().isoformat(timespec="seconds")
+        updates: list[tuple[str, int, str, int]] = []
+        allocation_rows: list[tuple[Any, ...]] = []
+        metadata_cache: dict[int, dict[str, Any]] = {}
+
+        for row in comparison_rows:
+            metadata = metadata_cache.setdefault(row["import_id"], json.loads(row["metadata_json"]))
+            headers = next((s["headers"] for s in metadata.get("sheets", []) if s["name"] == row["sheet_name"]), None)
+            if not headers:
+                continue
+            split = next((i for i, h in enumerate(headers) if i > 0 and h == "年月日"), None)
+            if split is None:
+                continue
+            data = json.loads(row["data_json"])
+            values = data["values"]
+            purchase_headers = headers[:split]
+            sale_values = values[split:]
+            if sale_values[0] in (None, ""):
+                continue  # not a real sale row
+            if values[0] not in (None, ""):
+                continue  # purchase side already filled
+
+            sale_date = _to_date(sale_values[0])
+            if month is not None:
+                row_month = f"{sale_date.year:04d}-{sale_date.month:02d}" if sale_date else None
+                if row_month != month:
+                    continue
+
+            feature_idx = _index_of(purchase_headers, "特徴")
+            product_idx = _index_of(purchase_headers, "品目")
+            descriptor = None
+            if feature_idx is not None and values[feature_idx] not in (None, ""):
+                descriptor = str(values[feature_idx]).strip()
+            elif product_idx is not None and values[product_idx] not in (None, ""):
+                descriptor = str(values[product_idx]).strip()
+            if not descriptor:
+                not_found += 1
+                continue
+
+            candidates = [
+                c for c in ledger_by_product.get(descriptor, [])
+                if c["id"] not in consumed and (sale_date is None or c["date"] is None or c["date"] <= sale_date)
+            ]
+            if not candidates:
+                not_found += 1
+                continue
+            match = candidates[0]
+            consumed.add(match["id"])
+
+            qty_idx = _index_of(purchase_headers, "数量")
+            unit_idx = _index_of(purchase_headers, "単価", contains=True)
+            amount_idx = _index_of(purchase_headers, "代価", contains=True)
+            name_idx = _index_of(purchase_headers, "相手方名")
+            note_idx = _index_of(purchase_headers, "備考")
+
+            values[0] = match["date"]
+            if qty_idx is not None: values[qty_idx] = match["qty"]
+            if unit_idx is not None: values[unit_idx] = match["unit"]
+            if amount_idx is not None: values[amount_idx] = match["amount"]
+            if name_idx is not None: values[name_idx] = match["name"]
+            if note_idx is not None and values[note_idx] in (None, "") and match["note"]:
+                values[note_idx] = match["note"]
+
+            data["values"] = values
+            updates.append((json_text(data), row["import_id"], row["sheet_name"], row["row_no"]))
+            allocation_rows.append((
+                row["import_id"], row["sheet_name"], row["row_no"], match["id"], "matched", "[]", None, now,
+            ))
+            filled += 1
+
+        if updates:
+            with closing(self.connect()) as db, db:
+                db.executemany(
+                    "UPDATE records SET data_json=? WHERE import_id=? AND sheet_name=? AND row_no=?", updates,
+                )
+                db.executemany(
+                    """INSERT INTO allocations(sale_import_id, sale_sheet, sale_row_no, ledger_record_id, status, candidates_json, note, created_at)
+                       VALUES(?,?,?,?,?,?,?,?)
+                       ON CONFLICT(sale_import_id, sale_sheet, sale_row_no) DO UPDATE SET
+                         ledger_record_id=excluded.ledger_record_id, status=excluded.status,
+                         candidates_json=excluded.candidates_json, note=excluded.note, created_at=excluded.created_at
+                    """,
+                    allocation_rows,
+                )
+        return {"filled": filled, "not_found": not_found}
+
     def export(self, import_id: int, output: str | Path, template_id: int | None = None,
                preview: bool = False, month: str | None = None) -> Path:
         with closing(self.connect()) as db, db:

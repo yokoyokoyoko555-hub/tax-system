@@ -151,8 +151,14 @@
   <section class="card">
     <h2>月ごとに見る（販売日基準）</h2>
     <p class="lead">
-      すべての相対表の取込を横断して、月ごとの件数です。クリックするとその月の中身を表示します。
+      すべての相対表の取込を横断して、月ごとの件数です。クリックするとその月の中身を表示します。<br>
+      相対表の仕入側（年月日・単価・数量・代価・相手方名・備考）が空欄の行は、商品の特徴が
+      完全に一致する古物台帳の購入記録があれば自動で埋められます（1件の古物台帳記録は
+      どこか一つの販売にしか使いません）。
     </p>
+    <form method="post" action="{{ url_for('comparison_fill_purchase') }}">
+      <button type="submit" class="button">古物台帳から仕入側を埋める（すべての月）</button>
+    </form>
     <table>
       <thead><tr><th>年月</th><th>件数</th><th></th></tr></thead>
       <tbody>
@@ -171,8 +177,8 @@
   {% endif %}
 {% endif %}
 
-<section class="card">
-  <h2>{% if kind == "ledger" %}個別の取込ファイル（参考・削除用）{% else %}取込済みデータ{% endif %}</h2>
+<details class="card">
+  <summary style="cursor:pointer;"><h2 style="display:inline;">{% if kind == "ledger" %}個別の取込ファイル（参考・削除用）{% else %}取込済みデータ{% endif %}（{{ imports|length }}件）</h2></summary>
   {% if imports %}
   <form method="post" action="{{ url_for('delete_imports_confirm') }}">
     <input type="hidden" name="kind" value="{{ kind }}">
@@ -218,5 +224,5 @@
   {% else %}
   <p class="muted">まだ{{ kind_labels[kind] }}が取り込まれていません。<a href="{{ url_for('new_import') }}">取り込む →</a></p>
   {% endif %}
-</section>
+</details>
 {% endblock %}

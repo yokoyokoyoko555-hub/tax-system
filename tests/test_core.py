@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from tax_system.core import (
     EXPORT_DATA_COLUMNS,
@@ -1132,6 +1132,157 @@ class ComparisonLibraryTests(unittest.TestCase):
         self.assertEqual([], self.app.find_comparison_duplicates())
         _, total_x = self.app.get_comparison_month_records("2026-03")
         self.assertEqual(2, total_x)
+
+
+class FillComparisonPurchaseFromLedgerTests(unittest.TestCase):
+    # matches the real production template: 品目 is a generic category shared by many
+    # rows, 特徴 is the actual per-item description that lines up with 古物台帳's 商品名.
+    HEADERS = [
+        "年月日", "区別", "品目", "特徴", "Cert#", "単価(税込）", "数量", "代価（税込）", "種類", "相手方名", "備考",
+        "年月日", "区分", "単価（JPY）", "数量", "代価（JPY）", "相手方名", "支払方法", "通貨",
+    ]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.app = TaxSystem(self.root / "runtime")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_ledger(self, rows, name="ledger.csv"):
+        path = self.root / name
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(dict(zip(LEDGER_COLUMNS, row)))
+        return path
+
+    def write_comparison_xlsx(self, rows, name="comparison.xlsx", sheet_name="輸出販売"):
+        # rows: list of (region, product, feature, sale_date, sale_unit, sale_qty, sale_amount, buyer)
+        wb = Workbook()
+        ws = wb.active
+        ws.title = sheet_name
+        for col, value in enumerate(self.HEADERS, 1):
+            ws.cell(2, col).value = value
+        for r, (region, product, feature, sale_date, sale_unit, sale_qty, sale_amount, buyer) in enumerate(rows, 3):
+            ws.cell(r, 2).value = region
+            ws.cell(r, 3).value = product
+            ws.cell(r, 4).value = feature
+            ws.cell(r, 5).value = "ー"
+            ws.cell(r, 12).value = sale_date
+            ws.cell(r, 13).value = "売却（輸出）"
+            ws.cell(r, 14).value = sale_unit
+            ws.cell(r, 15).value = sale_qty
+            ws.cell(r, 16).value = sale_amount
+            ws.cell(r, 17).value = buyer
+            ws.cell(r, 18).value = "クレジットカード"
+            ws.cell(r, 19).value = "JPY"
+        path = self.root / name
+        wb.save(path)
+        return path
+
+    def test_fills_blank_purchase_side_from_matching_ledger_record(self):
+        # fill_comparison_purchase_from_ledger reads only from the latest MERGED ledger
+        # import (the deduped canonical set), so tests must merge before filling.
+        ledger_id = self.app.import_ledger(self.write_ledger([
+            ["2026-05-01", "下置 誠龍", "しもおき", "1990-01-01", "住所", "000",
+             "【傷あり特価】おれの時代だァ 【OP09-096】", "1", "5000", "5000", ""],
+        ]))
+        self.app.merge_ledger_imports([ledger_id])
+        comparison_id = self.app.import_comparison(self.write_comparison_xlsx([
+            ("買受", "ワンピースカード", "【傷あり特価】おれの時代だァ 【OP09-096】",
+             "2026-06-03", 17800, 1, 17800, "Hani Fadlallah"),
+        ]))
+
+        result = self.app.fill_comparison_purchase_from_ledger()
+
+        self.assertEqual(1, result["filled"])
+        self.assertEqual(0, result["not_found"])
+        records, _ = self.app.get_records(comparison_id)
+        values = records[0]["data"]["values"]
+        self.assertEqual("2026-05-01", str(values[0]))
+        self.assertEqual(5000, values[5])  # 単価(税込)
+
+    def test_fills_qty_amount_and_name_correctly(self):
+        ledger_id = self.app.import_ledger(self.write_ledger([
+            ["2026-05-01", "下置 誠龍", "しもおき", "1990-01-01", "住所", "000",
+             "特定カードA", "1", "5000", "5000", "元の備考"],
+        ]))
+        self.app.merge_ledger_imports([ledger_id])
+        comparison_id = self.app.import_comparison(self.write_comparison_xlsx([
+            ("買受", "ワンピースカード", "特定カードA", "2026-06-03", 17800, 1, 17800, "Hani Fadlallah"),
+        ]))
+
+        self.app.fill_comparison_purchase_from_ledger()
+
+        records, _ = self.app.get_records(comparison_id)
+        values = records[0]["data"]["values"]
+        # purchase headers: 年月日,区別,品目,特徴,Cert#,単価(税込),数量,代価(税込),種類,相手方名,備考
+        self.assertEqual(1, values[6])       # 数量
+        self.assertEqual(5000, values[7])    # 代価（税込）
+        self.assertEqual("下置 誠龍", values[9])  # 相手方名
+        self.assertEqual("元の備考", values[10])  # 備考
+
+    def test_does_not_reuse_a_ledger_record_across_two_sales(self):
+        ledger_id = self.app.import_ledger(self.write_ledger([
+            ["2026-05-01", "客A", "きゃくえー", "1990-01-01", "住所A", "000", "特定カードB", "1", "1000", "1000", ""],
+            ["2026-05-02", "客B", "きゃくびー", "1990-01-01", "住所B", "000", "特定カードB", "1", "1200", "1200", ""],
+        ], "ledger.csv"))
+        self.app.merge_ledger_imports([ledger_id])
+        comparison_id = self.app.import_comparison(self.write_comparison_xlsx([
+            ("買受", "カテゴリ", "特定カードB", "2026-06-01", 2000, 1, 2000, "海外客1"),
+            ("買受", "カテゴリ", "特定カードB", "2026-06-02", 2200, 1, 2200, "海外客2"),
+        ]))
+
+        result = self.app.fill_comparison_purchase_from_ledger()
+
+        self.assertEqual(2, result["filled"])
+        records, _ = self.app.get_records(comparison_id)
+        names = sorted(r["data"]["values"][9] for r in records)
+        self.assertEqual(["客A", "客B"], names)  # FIFO: oldest ledger purchase used first
+
+    def test_month_filter_scopes_to_sale_month(self):
+        ledger_id = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "客A", "", "", "", "", "特定カードC", "1", "1000", "1000", ""],
+        ]))
+        self.app.merge_ledger_imports([ledger_id])
+        self.app.import_comparison(self.write_comparison_xlsx([
+            ("買受", "カテゴリ", "特定カードC", "2026-06-03", 2000, 1, 2000, "海外客"),
+        ]))
+
+        self.assertEqual(0, self.app.fill_comparison_purchase_from_ledger(month="2026-05")["filled"])
+        self.assertEqual(1, self.app.fill_comparison_purchase_from_ledger(month="2026-06")["filled"])
+
+    def test_not_found_when_no_matching_ledger_record(self):
+        self.app.import_comparison(self.write_comparison_xlsx([
+            ("買受", "カテゴリ", "存在しないカード", "2026-06-03", 2000, 1, 2000, "海外客"),
+        ]))
+
+        result = self.app.fill_comparison_purchase_from_ledger()
+
+        self.assertEqual(0, result["filled"])
+        self.assertEqual(1, result["not_found"])
+
+    def test_already_filled_purchase_rows_are_left_untouched(self):
+        self.app.import_ledger(self.write_ledger([
+            ["2026-05-01", "客A", "", "", "", "", "特定カードD", "1", "1000", "1000", ""],
+        ]))
+        path = self.write_comparison_xlsx([
+            ("買受", "カテゴリ", "特定カードD", "2026-06-03", 2000, 1, 2000, "海外客"),
+        ])
+        wb = load_workbook(path)
+        ws = wb.active
+        ws.cell(3, 1).value = "2026-01-01"  # pre-fill purchase-side 年月日
+        wb.save(path)
+        comparison_id = self.app.import_comparison(path)
+
+        result = self.app.fill_comparison_purchase_from_ledger()
+
+        self.assertEqual(0, result["filled"])
+        records, _ = self.app.get_records(comparison_id)
+        self.assertNotEqual("客A", records[0]["data"]["values"][9])
 
 
 class DeleteImportsTests(unittest.TestCase):
