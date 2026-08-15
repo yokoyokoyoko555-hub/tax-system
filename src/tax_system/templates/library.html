@@ -9,9 +9,10 @@
     <h2>重複の可能性がある行（{{ ledger_duplicates|length }}件）</h2>
     <p class="lead">
       結合済みの古物台帳（取込ID {{ merged.id }}）の中で、日時・名前・商品名・個数・金額が
-      完全に一致する行が見つかりました。同じ取引が複数の元データ（POS取引と本人確認データなど）に
-      記録されていた場合などに起こります。金額が二重に計上されている状態なので、確認のうえ
-      片方を削除することをおすすめします。<br>
+      完全に一致する行が見つかりました（商品名・個数も一致しているものだけを重複としています。
+      商品名や個数が違う行は別の取引として扱われ、ここには出てきません）。同じ取引が複数の
+      元データ（POS取引と本人確認データなど）に記録されていた場合などに起こります。金額が
+      二重に計上されている状態なので、確認のうえ片方を削除することをおすすめします。<br>
       本人確認情報（ふりがな・住所・電話番号など）が少ない方、または内容が完全に同じ方に
       「削除推奨」を付けています。情報量が同じで内容にも違いがある場合のみ推奨を付けていません。<br>
       ただし削除推奨はあくまで参考です。同額・別商品の取引を偶然2回行った可能性もあるため、
@@ -24,7 +25,7 @@
     </form>
     {% for group in ledger_duplicates %}
     <table style="margin-bottom:0.25rem;">
-      <thead><tr><th>行</th><th>日時</th><th>名前</th><th>ふりがな</th><th>住所</th><th>電話番号</th><th>金額</th><th>状態</th><th></th></tr></thead>
+      <thead><tr><th>行</th><th>日時</th><th>名前</th><th>ふりがな</th><th>住所</th><th>電話番号</th><th>商品名</th><th>個数</th><th>金額</th><th>状態</th><th></th></tr></thead>
       <tbody>
         {% for occ in group.occurrences %}
         <tr class="{{ 'level-error' if occ.recommended_delete else '' }}">
@@ -34,6 +35,8 @@
           <td>{{ occ.data['ふりがな'] }}</td>
           <td>{{ occ.data['住所'] }}</td>
           <td>{{ occ.data['電話番号'] }}</td>
+          <td>{{ occ.data['商品名'] }}</td>
+          <td>{{ occ.data['個数'] }}</td>
           <td>{{ occ.data['金額'] | num }}</td>
           <td>{{ "削除推奨（情報少）" if occ.recommended_delete else "" }}</td>
           <td>
