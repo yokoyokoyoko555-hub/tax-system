@@ -766,6 +766,29 @@ class MergeLedgerTests(unittest.TestCase):
         occurrences = self.app.find_ledger_duplicates(result["import_id"])[0]["occurrences"]
         self.assertEqual(1, sum(1 for o in occurrences if o["recommended_delete"]))
 
+    def test_find_ledger_duplicates_with_three_occurrences_mixed_completeness(self):
+        # one bare row (clearly worse) plus two identical full-detail rows tied for best:
+        # the bare one must still be recommended even though the top spot is a tie, and
+        # among the tied pair one should also be recommended since they're identical.
+        bare = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "", "", "", "", "商品A", "1", "1000", "1000", ""],
+        ], "a.csv"))
+        full1 = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "えー", "1990-01-01", "住所A", "000", "商品A", "1", "1000", "1000", ""],
+        ], "b.csv"))
+        full2 = self.app.import_ledger(self.write_ledger([
+            ["2026-04-01", "A", "えー", "1990-01-01", "住所A", "000", "商品A", "1", "1000", "1000", ""],
+        ], "c.csv"))
+        result = self.app.merge_ledger_imports([bare, full1, full2])
+
+        occurrences = self.app.find_ledger_duplicates(result["import_id"])[0]["occurrences"]
+        self.assertEqual(3, len(occurrences))
+        recommended = [o for o in occurrences if o["recommended_delete"]]
+        kept = [o for o in occurrences if not o["recommended_delete"]]
+        self.assertEqual(2, len(recommended))
+        self.assertEqual(1, len(kept))
+        self.assertTrue(all(o["data"]["ふりがな"] for o in kept))
+
     def test_dismiss_ledger_duplicate_overrides_recommendation(self):
         # even a row the system recommends deleting can be kept: dismissing the group
         # removes it from the list entirely, regardless of any recommendation.

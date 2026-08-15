@@ -1306,16 +1306,20 @@ class TaxSystem:
         for key, occurrences in groups.items():
             if len(occurrences) < 2 or key in dismissed:
                 continue
+            # 3件以上の重複もありうるため、best未満は常に削除推奨（best同士が複数あっても関係ない）。
+            # best同士の中に複数残る場合だけ、それらが互いに完全一致かどうかで判断する。
             best = max(o["completeness"] for o in occurrences)
-            clear_winner = sum(1 for o in occurrences if o["completeness"] == best) == 1
-            if clear_winner:
-                for o in occurrences:
-                    o["recommended_delete"] = o["completeness"] < best
-            elif len({json.dumps(o["data"], sort_keys=True) for o in occurrences}) == 1:
-                for index, o in enumerate(occurrences):
+            below_best = [o for o in occurrences if o["completeness"] < best]
+            at_best = [o for o in occurrences if o["completeness"] == best]
+            for o in below_best:
+                o["recommended_delete"] = True
+            if len(at_best) == 1:
+                at_best[0]["recommended_delete"] = False
+            elif len({json.dumps(o["data"], sort_keys=True) for o in at_best}) == 1:
+                for index, o in enumerate(at_best):
                     o["recommended_delete"] = index > 0
             else:
-                for o in occurrences:
+                for o in at_best:
                     o["recommended_delete"] = False
             results.append({"occurrences": occurrences})
         return results
