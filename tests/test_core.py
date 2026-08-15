@@ -44,6 +44,23 @@ class LedgerTests(unittest.TestCase):
         self.assertTrue(output.read_bytes().startswith(b"\xef\xbb\xbf"))
         self.assertIn(b"\r\n", output.read_bytes())
 
+    def test_ledger_import_tolerates_missing_remarks_column(self):
+        # some exports omit 備考 entirely (not just leave it blank) — the column itself
+        # is absent from the header, not just empty.
+        columns_without_remarks = LEDGER_COLUMNS[:-1]
+        path = self.root / "ledger_no_remarks.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=columns_without_remarks, lineterminator="\r\n")
+            writer.writeheader()
+            writer.writerow(dict(zip(columns_without_remarks, [
+                "2026-01-01", "テスト", "てすと", "2000-01-01", "匿名住所", "000", "商品", "2", "100", "200",
+            ])))
+        import_id = self.app.import_ledger(path)
+        records, total = self.app.get_records(import_id)
+        self.assertEqual(1, total)
+        self.assertEqual("", records[0]["data"]["備考"])
+        self.assertEqual("商品", records[0]["data"]["商品名"])
+
     def test_error_blocks_formal_export(self):
         row = dict(zip(LEDGER_COLUMNS, ["2026-01-01", "", "", "", "", "", "商品", "2", "100", "999", ""])); path = self.write_csv(row)
         import_id = self.app.import_ledger(path)

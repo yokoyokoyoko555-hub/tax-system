@@ -301,9 +301,17 @@ class TaxSystem:
         text, encoding = _read_csv_text(source)
         reader = csv.DictReader(text.splitlines())
         reader.fieldnames = _strip_trailing_blank_columns(reader.fieldnames)
-        if reader.fieldnames != LEDGER_COLUMNS:
+        columns = LEDGER_COLUMNS
+        without_remarks = LEDGER_COLUMNS[:-1]
+        if reader.fieldnames == without_remarks:
+            # 備考列がまるごと省略された形式にも対応する（値ではなく列自体が無い場合）
+            columns = without_remarks
+        elif reader.fieldnames != LEDGER_COLUMNS:
             raise ValueError(f"古物台帳の列が既存仕様と一致しません: {reader.fieldnames}")
-        rows = [row for row in reader if not _is_header_echo(row.values(), LEDGER_COLUMNS)]
+        rows = [row for row in reader if not _is_header_echo(row.values(), columns)]
+        if columns != LEDGER_COLUMNS:
+            for row in rows:
+                row["備考"] = ""
         return self._save_import("ledger", source.name, sha256(source), rows, {"encoding": encoding, "columns": reader.fieldnames})
 
     def import_ledger_pos(self, source: str | Path) -> dict[str, Any]:
