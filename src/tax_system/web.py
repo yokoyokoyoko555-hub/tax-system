@@ -105,9 +105,10 @@ def create_app(home: str | Path | None = None) -> Flask:
         rows, total = ts.get_comparison_month_records(month, offset=(page - 1) * per_page, limit=per_page)
         total_pages = max(1, -(-total // per_page))
         templates = [t for t in ts.list_templates() if t["report_type"] == "comparison"]
+        checks = ts.validate_comparison_month(month)
         return render_template(
             "comparison_month.html", month=month, rows=rows, total=total, page=page, total_pages=total_pages,
-            templates=templates,
+            templates=templates, checks=checks, has_errors=any(c.level == "error" for c in checks),
         )
 
     @app.route("/library/comparison/month/<month>/export", methods=["POST"])

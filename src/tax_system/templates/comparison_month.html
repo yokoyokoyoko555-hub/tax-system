@@ -12,6 +12,25 @@
   <button type="submit" class="button">古物台帳から仕入側を埋める（この月）</button>
 </form>
 
+{% if checks %}
+<section class="card">
+  <h2 class="error-title">エラー・注意 {{ checks|length }} 件</h2>
+  <table>
+    <thead><tr><th>シート</th><th>行</th><th>内容</th></tr></thead>
+    <tbody>
+      {% for c in checks %}
+      <tr class="level-{{ c.level }}">
+        <td>{{ c.sheet or "-" }}</td>
+        <td>{{ c.row_no if c.row_no is not none else "-" }}</td>
+        <td>{{ c.message }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">エラーが1件でもある場合、正式出力はできません。確認用出力は可能です。「古物台帳から仕入側を埋める」で解消できるものもあります。</p>
+</section>
+{% endif %}
+
 <section class="card">
   <h2>この月を出力</h2>
   {% if templates %}
@@ -24,11 +43,12 @@
       </select>
     </label>
     <label class="checkbox">
-      <input type="checkbox" name="preview">
+      <input type="checkbox" name="preview" {% if has_errors %}checked disabled{% endif %}>
       確認用として出力する（正式帳票ではない透かし入り）
     </label>
+    {% if has_errors %}<input type="hidden" name="preview" value="on">{% endif %}
     <button type="submit" class="button small">出力する</button>
-    <p class="muted">エラーが残っている場合は、確認用のみ出力できます。</p>
+    {% if has_errors %}<p class="muted">エラーがあるため、正式出力は選べません（確認用のみ）。</p>{% endif %}
   </form>
   {% else %}
   <p class="muted">相対表のテンプレートが未登録です。先に<a href="{{ url_for('new_template') }}">テンプレート登録</a>してください。</p>

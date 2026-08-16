@@ -1812,34 +1812,28 @@ class TaxSystem:
                 )
         return {"filled": filled, "not_found": not_found}
 
-    def export_comparison_month(self, month: str, template_id: int, output: str | Path,
-                                preview: bool = False) -> Path:
-        """指定した月（販売の年月日基準）の相対表を、取込をまたいで横断的に集めて
-        1つのテンプレートに出力する。相対表は古物台帳と違って自動結合していないため、
-        月ごとの出力は複数の取込から該当行を集めて行う。
-        """
+    def _comparison_records_for_month(self, month: str) -> list[sqlite3.Row]:
         sheet_headers_by_import = self._comparison_sheet_headers_by_import()
         with closing(self.connect()) as db, db:
-            template = db.execute("SELECT * FROM template_versions WHERE id=?", (template_id,)).fetchone()
-            if not template or template["report_type"] != "comparison":
-                raise ValueError("相対表のテンプレートを指定してください")
             rows = db.execute(
                 "SELECT r.import_id, r.sheet_name, r.row_no, r.data_json "
                 "FROM records r JOIN imports i ON r.import_id = i.id WHERE i.kind='comparison'"
             ).fetchall()
-
-        matched = [
+        return [
             row for row in rows
             if self._record_month("comparison", json.loads(row["data_json"]),
                                   sheet_headers_by_import.get(row["import_id"])) == month
         ]
-        if not matched:
-            raise ValueError(f"{month} の相対表データがありません")
 
+    def validate_comparison_month(self, month: str) -> list[CheckResult]:
+        """指定した月（販売の年月日基準）の相対表を、取込をまたいで横断的にチェックする。
+        取込ごとに列構成（テンプレート）が異なりうるため、取込ごとにまとめてチェックする。
+        """
+        sheet_headers_by_import = self._comparison_sheet_headers_by_import()
+        matched = self._comparison_records_for_month(month)
         by_import: dict[int, list[sqlite3.Row]] = {}
         for row in matched:
             by_import.setdefault(row["import_id"], []).append(row)
-
         checks: list[CheckResult] = []
         for imp_id, group_rows in by_import.items():
             metadata = {
@@ -1847,7 +1841,28 @@ class TaxSystem:
                           for name, headers in sheet_headers_by_import.get(imp_id, {}).items()],
             }
             checks.extend(self._validate_comparison(group_rows, metadata))
+        return checks
 
+    def export_comparison_month(self, month: str, template_id: int, output: str | Path,
+                                preview: bool = False) -> Path:
+        """指定した月（販売の年月日基準）の相対表を、取込をまたいで横断的に集めて
+        1つのテンプレートに出力する。相対表は古物台帳と違って自動結合していないため、
+        月ごとの出力は複数の取込から該当行を集めて行う。
+        """
+        with closing(self.connect()) as db, db:
+            template = db.execute("SELECT * FROM template_versions WHERE id=?", (template_id,)).fetchone()
+            if not template or template["report_type"] != "comparison":
+                raise ValueError("相対表のテンプレートを指定してください")
+
+        matched = self._comparison_records_for_month(month)
+        if not matched:
+            raise ValueError(f"{month} の相対表データがありません")
+
+        by_import: dict[int, list[sqlite3.Row]] = {}
+        for row in matched:
+            by_import.setdefault(row["import_id"], []).append(row)
+
+        checks = self.validate_comparison_month(month)
         if any(c.level == "error" for c in checks) and not preview:
             raise ValueError("検証エラーがあるため正式出力できません。確認用出力をお試しください")
 
