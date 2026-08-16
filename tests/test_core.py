@@ -1133,6 +1133,42 @@ class ComparisonLibraryTests(unittest.TestCase):
         _, total_x = self.app.get_comparison_month_records("2026-03")
         self.assertEqual(2, total_x)
 
+    def test_export_comparison_month_combines_multiple_imports(self):
+        template_id = self.register_template()
+        self.build_one(
+            [["2026-01-01", "Aさん", "えー", "1990-01-01", "匿名住所", "000", "カードX", "1", "1000", "1000", ""]],
+            [["2026-03-01", "カードX", "2000", "1", "2000", "海外顧客1", "銀行振込", "JPY"]],
+            "ledger1.csv", "export1.csv", template_id,
+        )
+        self.build_one(
+            [["2026-01-02", "Bさん", "びー", "1991-01-01", "匿名住所", "000", "カードY", "1", "1200", "1200", ""]],
+            [["2026-03-15", "カードY", "2200", "1", "2200", "海外顧客2", "銀行振込", "JPY"]],
+            "ledger2.csv", "export2.csv", template_id,
+        )
+
+        output = self.root / "export_2026-03.xlsx"
+        result_path = self.app.export_comparison_month("2026-03", template_id, output)
+
+        wb = load_workbook(result_path)
+        ws = wb["輸出販売"]
+        products = [ws.cell(r, 2).value for r in range(3, ws.max_row + 1) if ws.cell(r, 2).value]
+        self.assertEqual({"カードX", "カードY"}, set(products))
+
+    def test_export_comparison_month_raises_when_no_data(self):
+        template_id = self.register_template()
+        with self.assertRaises(ValueError):
+            self.app.export_comparison_month("2099-01", template_id, self.root / "empty.xlsx")
+
+    def test_export_comparison_month_requires_comparison_template(self):
+        template_id = self.register_template()
+        self.build_one(
+            [["2026-01-01", "Aさん", "えー", "1990-01-01", "匿名住所", "000", "カードX", "1", "1000", "1000", ""]],
+            [["2026-03-01", "カードX", "2000", "1", "2000", "海外顧客1", "銀行振込", "JPY"]],
+            "ledger1.csv", "export1.csv", template_id,
+        )
+        with self.assertRaises(ValueError):
+            self.app.export_comparison_month("2026-03", 99999, self.root / "bad.xlsx")
+
 
 class FillComparisonPurchaseFromLedgerTests(unittest.TestCase):
     # matches the real production template: 品目 is a generic category shared by many

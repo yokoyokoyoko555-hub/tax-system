@@ -1812,6 +1812,60 @@ class TaxSystem:
                 )
         return {"filled": filled, "not_found": not_found}
 
+    def export_comparison_month(self, month: str, template_id: int, output: str | Path,
+                                preview: bool = False) -> Path:
+        """指定した月（販売の年月日基準）の相対表を、取込をまたいで横断的に集めて
+        1つのテンプレートに出力する。相対表は古物台帳と違って自動結合していないため、
+        月ごとの出力は複数の取込から該当行を集めて行う。
+        """
+        sheet_headers_by_import = self._comparison_sheet_headers_by_import()
+        with closing(self.connect()) as db, db:
+            template = db.execute("SELECT * FROM template_versions WHERE id=?", (template_id,)).fetchone()
+            if not template or template["report_type"] != "comparison":
+                raise ValueError("相対表のテンプレートを指定してください")
+            rows = db.execute(
+                "SELECT r.import_id, r.sheet_name, r.row_no, r.data_json "
+                "FROM records r JOIN imports i ON r.import_id = i.id WHERE i.kind='comparison'"
+            ).fetchall()
+
+        matched = [
+            row for row in rows
+            if self._record_month("comparison", json.loads(row["data_json"]),
+                                  sheet_headers_by_import.get(row["import_id"])) == month
+        ]
+        if not matched:
+            raise ValueError(f"{month} の相対表データがありません")
+
+        by_import: dict[int, list[sqlite3.Row]] = {}
+        for row in matched:
+            by_import.setdefault(row["import_id"], []).append(row)
+
+        checks: list[CheckResult] = []
+        for imp_id, group_rows in by_import.items():
+            metadata = {
+                "sheets": [{"name": name, "headers": headers}
+                          for name, headers in sheet_headers_by_import.get(imp_id, {}).items()],
+            }
+            checks.extend(self._validate_comparison(group_rows, metadata))
+
+        if any(c.level == "error" for c in checks) and not preview:
+            raise ValueError("検証エラーがあるため正式出力できません。確認用出力をお試しください")
+
+        output = Path(output).resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        self._export_comparison(matched, Path(template["stored_path"]), output, preview)
+
+        now = datetime.now().isoformat(timespec="seconds")
+        checks_json = json_text([c.__dict__ for c in checks])
+        with closing(self.connect()) as db, db:
+            db.executemany(
+                "INSERT INTO exports(import_id,template_id,mode,output_name,output_sha256,checks_json,created_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                [(imp_id, template_id, "preview" if preview else "formal", output.name, sha256(output),
+                  checks_json, now) for imp_id in by_import],
+            )
+        return output
+
     def export(self, import_id: int, output: str | Path, template_id: int | None = None,
                preview: bool = False, month: str | None = None) -> Path:
         with closing(self.connect()) as db, db:

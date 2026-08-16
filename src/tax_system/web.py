@@ -104,9 +104,30 @@ def create_app(home: str | Path | None = None) -> Flask:
         page = max(1, request.args.get("page", 1, type=int))
         rows, total = ts.get_comparison_month_records(month, offset=(page - 1) * per_page, limit=per_page)
         total_pages = max(1, -(-total // per_page))
+        templates = [t for t in ts.list_templates() if t["report_type"] == "comparison"]
         return render_template(
             "comparison_month.html", month=month, rows=rows, total=total, page=page, total_pages=total_pages,
+            templates=templates,
         )
+
+    @app.route("/library/comparison/month/<month>/export", methods=["POST"])
+    def comparison_month_export(month: str):
+        ts = system()
+        preview = request.form.get("preview") == "on"
+        template_id = request.form.get("template_id") or None
+        if not template_id:
+            flash("テンプレートを選択してください", "error")
+            return redirect(url_for("comparison_month_view", month=month))
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        prefix = "確認用" if preview else "正式"
+        output = OUTPUT_DIR / f"{prefix}_相対表_{month}_{stamp}.xlsx"
+        try:
+            ts.export_comparison_month(month, int(template_id), output, preview)
+        except ValueError as exc:
+            flash(f"出力に失敗しました: {exc}", "error")
+            return redirect(url_for("comparison_month_view", month=month))
+        return redirect(url_for("download", filename=output.name))
 
     @app.route("/comparison-duplicates/delete", methods=["POST"])
     def comparison_duplicate_delete():

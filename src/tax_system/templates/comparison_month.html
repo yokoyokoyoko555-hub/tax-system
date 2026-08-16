@@ -12,6 +12,29 @@
   <button type="submit" class="button">古物台帳から仕入側を埋める（この月）</button>
 </form>
 
+<section class="card">
+  <h2>この月を出力</h2>
+  {% if templates %}
+  <form method="post" action="{{ url_for('comparison_month_export', month=month) }}">
+    <label>使用するテンプレート
+      <select name="template_id" required>
+        {% for t in templates %}
+        <option value="{{ t.id }}">{{ t.name }} / {{ t.version }}（適用開始 {{ t.effective_from }}）</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="checkbox">
+      <input type="checkbox" name="preview">
+      確認用として出力する（正式帳票ではない透かし入り）
+    </label>
+    <button type="submit" class="button small">出力する</button>
+    <p class="muted">エラーが残っている場合は、確認用のみ出力できます。</p>
+  </form>
+  {% else %}
+  <p class="muted">相対表のテンプレートが未登録です。先に<a href="{{ url_for('new_template') }}">テンプレート登録</a>してください。</p>
+  {% endif %}
+</section>
+
 <div class="card" style="overflow-x:auto;">
   <table>
     <thead>
