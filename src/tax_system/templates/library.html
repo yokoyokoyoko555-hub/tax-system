@@ -108,6 +108,45 @@
 {% endif %}
 
 {% if kind == "comparison" %}
+  {% if purchase_reuse %}
+  <section class="card level-error">
+    <h2>仕入先が重複している可能性（{{ purchase_reuse|length }}件）</h2>
+    <p class="lead">
+      仕入側（相手方名・年月日・品目/特徴）が完全に一致する行が、複数の販売行にまたがって
+      見つかりました。実際には1回しか仕入れていないものを、誤って2件以上の販売に対応付けて
+      いる（二重に売上計上している）おそれがあります。内容を確認し、誤りであれば片方を
+      削除してください。
+    </p>
+    {% for group in purchase_reuse %}
+    <table style="margin-bottom:1rem;">
+      <caption class="muted" style="text-align:left; caption-side:top;">
+        {{ group.vendor }} / {{ group.date }} / {{ group.product }}
+      </caption>
+      <thead><tr><th>取込ID</th><th>ファイル名</th><th>シート</th><th>行</th><th></th></tr></thead>
+      <tbody>
+        {% for occ in group.occurrences %}
+        <tr class="level-error">
+          <td>{{ occ.import_id }}</td>
+          <td>{{ occ.source_name }}</td>
+          <td>{{ occ.sheet }}</td>
+          <td>{{ occ.row_no }}</td>
+          <td>
+            <a class="button small" href="{{ url_for('records_view', import_id=occ.import_id, sheet=occ.sheet) }}">中身を見る</a>
+            <form method="post" action="{{ url_for('comparison_duplicate_delete') }}" style="display:inline;">
+              <input type="hidden" name="import_id" value="{{ occ.import_id }}">
+              <input type="hidden" name="sheet" value="{{ occ.sheet }}">
+              <input type="hidden" name="row_no" value="{{ occ.row_no }}">
+              <button type="submit" class="button small">この行を削除</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endfor %}
+  </section>
+  {% endif %}
+
   {% if duplicates %}
   <section class="card level-error">
     <h2>重複の可能性がある行（{{ duplicates|length }}件）</h2>

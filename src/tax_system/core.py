@@ -220,6 +220,7 @@ class TaxSystem:
                 );
                 CREATE INDEX IF NOT EXISTS idx_records_data_json ON records(data_json);
                 CREATE INDEX IF NOT EXISTS idx_records_import_row ON records(import_id, row_no);
+                CREATE INDEX IF NOT EXISTS idx_records_import_sheet_row ON records(import_id, sheet_name, row_no);
                 CREATE TABLE IF NOT EXISTS exports(
                   id INTEGER PRIMARY KEY, import_id INTEGER NOT NULL, template_id INTEGER,
                   mode TEXT NOT NULL, output_name TEXT NOT NULL, output_sha256 TEXT NOT NULL,
@@ -745,6 +746,15 @@ class TaxSystem:
             })
         return results[offset:offset + limit], len(results)
 
+    @staticmethod
+    def _normalize_comparison_value(value: Any) -> Any:
+        # Excelの数式再計算などで生じるごく僅かな小数誤差（例: 436.3636363636363 と
+        # 436.3636364）で、本来は同じ内容の行が別物として扱われないよう、金額の丸め
+        # 単位である小数第2位までで比較する。
+        if isinstance(value, float):
+            return round(value, 2)
+        return value
+
     def find_comparison_duplicates(self) -> list[dict[str, Any]]:
         """相対表の複数の取込にまたがって、内容が完全に一致する行（同じファイルの重複取込など）
         をまとめる。同じ取込（同じファイル）内での重複は対象外（意図的に同じ内容の別取引である
@@ -759,7 +769,10 @@ class TaxSystem:
         groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
         for row in rows:
             data = json.loads(row["data_json"])
-            key = (row["sheet_name"], tuple(v for v in data["values"] if v is not None))
+            key = (
+                row["sheet_name"],
+                tuple(self._normalize_comparison_value(v) for v in data["values"] if v is not None),
+            )
             groups.setdefault(key, []).append({
                 "import_id": row["import_id"], "source_name": row["source_name"],
                 "sheet": row["sheet_name"], "row_no": row["row_no"], "imported_at": row["imported_at"],
@@ -777,6 +790,60 @@ class TaxSystem:
             results.append({"occurrences": occurrences})
         return results
 
+    def find_comparison_purchase_reuse(self) -> list[dict[str, Any]]:
+        """相対表の仕入側（相手方名・年月日・品目/特徴）が完全に一致する行が、全ての取込を
+        横断して複数の販売行にまたがっていないかチェックする。同じ仕入（同じ人から同じ日に
+        買った同じ商品）が2件以上の販売に対応付けられている場合、実際には1回しか仕入れて
+        いないものを二重に売上計上している可能性が高い。行の内容が完全一致する重複
+        （find_comparison_duplicates）とは別の観点のチェック：こちらは販売側（買い手・日付・
+        金額）が違っても、仕入側だけが同じなら検出する。
+        """
+        sheet_headers_by_import = self._comparison_sheet_headers_by_import()
+        with closing(self.connect()) as db, db:
+            rows = db.execute(
+                "SELECT r.import_id, r.sheet_name, r.row_no, r.data_json, i.source_name "
+                "FROM records r JOIN imports i ON r.import_id=i.id WHERE i.kind='comparison' "
+                "ORDER BY r.import_id, r.sheet_name, r.row_no"
+            ).fetchall()
+        groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+        for row in rows:
+            headers = sheet_headers_by_import.get(row["import_id"], {}).get(row["sheet_name"])
+            if not headers:
+                continue
+            split = next((i for i, h in enumerate(headers) if i > 0 and h == "年月日"), None)
+            if split is None:
+                continue
+            data = json.loads(row["data_json"])
+            values = data["values"]
+            purchase, sale = values[:split], values[split:]
+            if sale[0] in (None, ""):
+                continue  # not a real sale row
+            purchase_headers = headers[:split]
+            name_idx = _index_of(purchase_headers, "相手方名")
+            if name_idx is None or purchase[name_idx] in (None, ""):
+                continue
+            feature_idx = _index_of(purchase_headers, "特徴")
+            product_idx = _index_of(purchase_headers, "品目")
+            descriptor = None
+            if feature_idx is not None and purchase[feature_idx] not in (None, ""):
+                descriptor = str(purchase[feature_idx]).strip()
+            elif product_idx is not None and purchase[product_idx] not in (None, ""):
+                descriptor = str(purchase[product_idx]).strip()
+            if not descriptor:
+                continue
+            name = str(purchase[name_idx]).strip()
+            purchase_date = purchase[0]
+            key = (name, str(purchase_date) if purchase_date else None, descriptor)
+            groups.setdefault(key, []).append({
+                "import_id": row["import_id"], "source_name": row["source_name"],
+                "sheet": row["sheet_name"], "row_no": row["row_no"],
+                "vendor": name, "date": purchase_date, "product": descriptor,
+            })
+        return [
+            {"vendor": key[0], "date": key[1], "product": key[2], "occurrences": occurrences}
+            for key, occurrences in groups.items() if len(occurrences) > 1
+        ]
+
     def delete_comparison_record(self, import_id: int, sheet: str, row_no: int) -> None:
         with closing(self.connect()) as db, db:
             db.execute(
@@ -790,15 +857,26 @@ class TaxSystem:
 
     def delete_recommended_comparison_duplicates(self) -> int:
         """find_comparison_duplicates() で「削除推奨（古い）」となった行をまとめて削除する。
-        件数が多いときに1件ずつ削除する手間を省くための一括操作。
+        件数が多いと、1件ごとに接続し直す（delete_comparison_recordをループで呼ぶ）方式は
+        非常に遅くなるため、1つの接続・トランザクションでまとめて処理する。
         """
         targets = [
             (o["import_id"], o["sheet"], o["row_no"])
             for group in self.find_comparison_duplicates()
             for o in group["occurrences"] if o["recommended_delete"]
         ]
-        for import_id, sheet, row_no in targets:
-            self.delete_comparison_record(import_id, sheet, row_no)
+        if not targets:
+            return 0
+        with closing(self.connect()) as db, db:
+            for import_id, sheet, row_no in targets:
+                db.execute(
+                    "DELETE FROM allocations WHERE sale_import_id=? AND sale_sheet=? AND sale_row_no=?",
+                    (import_id, sheet, row_no),
+                )
+                db.execute(
+                    "DELETE FROM records WHERE import_id=? AND sheet_name=? AND row_no=?",
+                    (import_id, sheet, row_no),
+                )
         return len(targets)
 
     def latest_merged_ledger_import(self) -> dict[str, Any] | None:

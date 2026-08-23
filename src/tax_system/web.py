@@ -86,14 +86,16 @@ def create_app(home: str | Path | None = None) -> Flask:
             ledger_duplicates = ledger_duplicates_all[start:start + dup_page_size]
         comparison_months = None
         duplicates = None
+        purchase_reuse = None
         if kind == "comparison":
             comparison_months = ts.comparison_month_summary()
             duplicates = ts.find_comparison_duplicates()
+            purchase_reuse = ts.find_comparison_purchase_reuse()
         return render_template(
             "library.html", kind=kind, imports=imports, merged=merged, months=months,
             ledger_duplicates=ledger_duplicates, ledger_dup_total=len(ledger_duplicates_all or []),
             ledger_dup_page=ledger_dup_page, ledger_dup_total_pages=ledger_dup_total_pages,
-            comparison_months=comparison_months, duplicates=duplicates,
+            comparison_months=comparison_months, duplicates=duplicates, purchase_reuse=purchase_reuse,
         )
 
     @app.route("/library/comparison/month/<month>")

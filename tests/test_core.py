@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1092,6 +1093,30 @@ class ComparisonLibraryTests(unittest.TestCase):
 
         self.assertEqual([], self.app.find_comparison_duplicates())
 
+    def test_find_comparison_duplicates_tolerates_float_rounding_noise(self):
+        # two imports of what's really the same row, but a recalculated cell landed as
+        # 999.9999999999999 in one file and 1000 in the other (Excel formula
+        # re-evaluation) — these must still be recognized as the same duplicate.
+        template_id = self.register_template()
+        ledger_rows = [["2026-01-01", "Aさん", "えー", "1990-01-01", "匿名住所", "000", "カードX", "1", "1000", "1000", ""]]
+        export_rows = [["2026-03-01", "カードX", "2000", "1", "2000", "海外顧客1", "銀行振込", "JPY"]]
+        self.build_one(ledger_rows, export_rows, "ledger1.csv", "export1.csv", template_id)
+        second = self.build_one(ledger_rows, export_rows, "ledger2.csv", "export2.csv", template_id)
+
+        with closing(self.app.connect()) as db, db:
+            row = db.execute(
+                "SELECT row_no, data_json FROM records WHERE import_id=?", (second["import_id"],)
+            ).fetchone()
+            data = json.loads(row["data_json"])
+            data["values"] = [999.9999999999999 if v == 1000 else v for v in data["values"]]
+            db.execute(
+                "UPDATE records SET data_json=? WHERE import_id=? AND row_no=?",
+                (json.dumps(data, ensure_ascii=False), second["import_id"], row["row_no"]),
+            )
+
+        duplicates = self.app.find_comparison_duplicates()
+        self.assertEqual(1, len(duplicates))
+
     def test_delete_comparison_record_removes_row(self):
         template_id = self.register_template()
         ledger_rows = [["2026-01-01", "Aさん", "えー", "1990-01-01", "匿名住所", "000", "カードX", "2", "1000", "2000", ""]]
@@ -1319,6 +1344,90 @@ class FillComparisonPurchaseFromLedgerTests(unittest.TestCase):
         self.assertEqual(0, result["filled"])
         records, _ = self.app.get_records(comparison_id)
         self.assertNotEqual("客A", records[0]["data"]["values"][9])
+
+
+class ComparisonPurchaseReuseTests(unittest.TestCase):
+    # same real-world header layout as FillComparisonPurchaseFromLedgerTests, but the
+    # rows here also fill in the purchase-side 年月日/相手方名 directly (as if the shop's
+    # own process, or fill_comparison_purchase_from_ledger, had already populated them).
+    HEADERS = [
+        "年月日", "区別", "品目", "特徴", "Cert#", "単価(税込）", "数量", "代価（税込）", "種類", "相手方名", "備考",
+        "年月日", "区分", "単価（JPY）", "数量", "代価（JPY）", "相手方名", "支払方法", "通貨",
+    ]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.app = TaxSystem(self.root / "runtime")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_comparison_xlsx(self, rows, name="comparison.xlsx", sheet_name="輸出販売"):
+        # rows: list of (purchase_date, feature, purchase_vendor, sale_date, sale_amount, buyer)
+        wb = Workbook()
+        ws = wb.active
+        ws.title = sheet_name
+        for col, value in enumerate(self.HEADERS, 1):
+            ws.cell(2, col).value = value
+        for r, (purchase_date, feature, vendor, sale_date, sale_amount, buyer) in enumerate(rows, 3):
+            ws.cell(r, 1).value = purchase_date
+            ws.cell(r, 2).value = "買受"
+            ws.cell(r, 3).value = "カテゴリ"
+            ws.cell(r, 4).value = feature
+            ws.cell(r, 5).value = "ー"
+            ws.cell(r, 10).value = vendor
+            ws.cell(r, 12).value = sale_date
+            ws.cell(r, 13).value = "売却（輸出）"
+            ws.cell(r, 16).value = sale_amount
+            ws.cell(r, 17).value = buyer
+            ws.cell(r, 18).value = "クレジットカード"
+            ws.cell(r, 19).value = "JPY"
+        path = self.root / name
+        wb.save(path)
+        return path
+
+    def test_detects_same_purchase_used_by_two_sales(self):
+        self.app.import_comparison(self.write_comparison_xlsx([
+            ("2026-05-01", "特定カードX", "下置 誠龍", "2026-06-03", 17800, "海外客1"),
+            ("2026-05-01", "特定カードX", "下置 誠龍", "2026-06-10", 15000, "海外客2"),
+        ]))
+
+        results = self.app.find_comparison_purchase_reuse()
+
+        self.assertEqual(1, len(results))
+        self.assertEqual("下置 誠龍", results[0]["vendor"])
+        self.assertEqual("特定カードX", results[0]["product"])
+        self.assertEqual(2, len(results[0]["occurrences"]))
+
+    def test_no_alert_when_purchases_are_distinct(self):
+        self.app.import_comparison(self.write_comparison_xlsx([
+            ("2026-05-01", "特定カードX", "下置 誠龍", "2026-06-03", 17800, "海外客1"),
+            ("2026-05-02", "特定カードY", "下置 誠龍", "2026-06-10", 15000, "海外客2"),
+        ]))
+
+        self.assertEqual([], self.app.find_comparison_purchase_reuse())
+
+    def test_detects_reuse_across_different_imports(self):
+        self.app.import_comparison(self.write_comparison_xlsx([
+            ("2026-05-01", "特定カードX", "下置 誠龍", "2026-06-03", 17800, "海外客1"),
+        ], "comparison1.xlsx"))
+        self.app.import_comparison(self.write_comparison_xlsx([
+            ("2026-05-01", "特定カードX", "下置 誠龍", "2026-07-01", 16000, "海外客3"),
+        ], "comparison2.xlsx"))
+
+        results = self.app.find_comparison_purchase_reuse()
+
+        self.assertEqual(1, len(results))
+        self.assertEqual(2, len({o["import_id"] for o in results[0]["occurrences"]}))
+
+    def test_ignores_rows_with_blank_purchase_side(self):
+        self.app.import_comparison(self.write_comparison_xlsx([
+            (None, "特定カードX", None, "2026-06-03", 17800, "海外客1"),
+            (None, "特定カードX", None, "2026-06-10", 15000, "海外客2"),
+        ]))
+
+        self.assertEqual([], self.app.find_comparison_purchase_reuse())
 
 
 class DeleteImportsTests(unittest.TestCase):
