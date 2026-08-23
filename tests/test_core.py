@@ -1353,5 +1353,45 @@ class DeleteImportsTests(unittest.TestCase):
         self.assertIsNotNone(self.app.get_import(id3))
 
 
+class InventoryExportTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.app = TaxSystem(self.root / "runtime")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_inventory(self, name="inventory.csv"):
+        path = self.root / name
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=INVENTORY_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            writer.writerow({"商品名": "テストカードA", "仕入れ原価": "5000", "在庫数": "10"})
+            writer.writerow({"商品名": "テストカードB", "仕入れ原価": "3000", "在庫数": "5"})
+        return path
+
+    def test_export_inventory_writes_csv_with_display_columns(self):
+        import_id = self.app.import_inventory(self.write_inventory(), as_of="2026-04")
+
+        output = self.root / "out.csv"
+        self.app.export(import_id, output, preview=True)
+
+        with output.open(encoding="utf-8-sig") as fh:
+            rows = list(csv.DictReader(fh))
+        self.assertEqual(["商品名", "カテゴリ", "サブカテゴリ", "グループ", "仕入れ原価", "販売価格", "在庫数"], list(rows[0].keys()))
+        self.assertEqual("テストカードA", rows[0]["商品名"])
+        self.assertEqual("5000", rows[0]["仕入れ原価"])
+        self.assertEqual("", rows[0]["カテゴリ"])
+
+    def test_export_inventory_month_requires_matching_as_of(self):
+        import_id = self.app.import_inventory(self.write_inventory(), as_of="2026-04")
+
+        self.app.export(import_id, self.root / "ok.csv", preview=True, month="2026-04")
+
+        with self.assertRaises(ValueError):
+            self.app.export(import_id, self.root / "bad.csv", preview=True, month="2026-05")
+
+
 if __name__ == "__main__": unittest.main()
 

@@ -9,10 +9,9 @@ from pathlib import Path
 from flask import Flask, abort, flash, redirect, render_template, request, send_file, session, url_for
 from werkzeug.utils import secure_filename
 
-from .core import EXPORT_DATA_COLUMNS, LEDGER_COLUMNS, TaxSystem, translate_ja_to_en
+from .core import EXPORT_DATA_COLUMNS, INVENTORY_DISPLAY_COLUMNS, LEDGER_COLUMNS, TaxSystem, translate_ja_to_en
 
 KIND_LABELS = {"ledger": "古物台帳", "comparison": "相対表", "inventory": "期末在庫表", "export_data": "輸出データ"}
-INVENTORY_DISPLAY_COLUMNS = ["商品名", "カテゴリ", "サブカテゴリ", "グループ", "仕入れ原価", "販売価格", "在庫数"]
 FLAT_COLUMNS = {"ledger": LEDGER_COLUMNS, "inventory": INVENTORY_DISPLAY_COLUMNS, "export_data": EXPORT_DATA_COLUMNS}
 
 OUTPUT_DIR = Path("outputs").resolve()
@@ -520,7 +519,7 @@ def create_app(home: str | Path | None = None) -> Flask:
         month = request.form.get("month") or None
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        suffix = ".csv" if imp["kind"] == "ledger" else ".xlsx"
+        suffix = ".csv" if imp["kind"] in ("ledger", "inventory") else ".xlsx"
         prefix = "確認用" if preview else "正式"
         name_part = f"{imp['kind']}_{import_id}" + (f"_{month}" if month else "")
         output = OUTPUT_DIR / f"{prefix}_{name_part}_{stamp}{suffix}"

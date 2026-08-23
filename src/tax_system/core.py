@@ -19,6 +19,7 @@ from openpyxl import load_workbook
 
 LEDGER_COLUMNS = ["日時", "名前", "ふりがな", "生年月日", "住所", "電話番号", "商品名", "個数", "単価", "金額", "備考"]
 INVENTORY_COLUMNS = ["商品名", "仕入れ原価", "在庫数"]
+INVENTORY_DISPLAY_COLUMNS = ["商品名", "カテゴリ", "サブカテゴリ", "グループ", "仕入れ原価", "販売価格", "在庫数"]
 EXPORT_DATA_COLUMNS = ["年月日", "品名", "金額", "数量", "小計", "相手方名", "支払方法", "通貨"]
 LEDGER_POS_COLUMNS = ["履歴ID", "状態", "日時", "ユーザーID", "氏名", "カード番号", "カード名", "数量", "単価", "金額", "カード備考", "全体備考"]
 LEDGER_IDENTITY_COLUMNS = ["日時", "名前", "名前ふりがな", "生年月日", "住所", "電話番号", "金額"]
@@ -1891,12 +1892,17 @@ class TaxSystem:
             template = db.execute("SELECT * FROM template_versions WHERE id=?", (template_id,)).fetchone() if template_id else None
 
         if month is not None:
-            if imp["kind"] != "ledger":
-                raise ValueError("月ごとの出力は古物台帳のみ対応しています")
-            records = [r for r in records if self._record_month("ledger", json.loads(r["data_json"]), None) == month]
-            if not records:
-                raise ValueError(f"{month} の古物台帳データがありません")
-            checks = self._validate_ledger(records)
+            if imp["kind"] not in ("ledger", "inventory"):
+                raise ValueError("月ごとの出力は古物台帳・期末在庫表のみ対応しています")
+            if imp["kind"] == "ledger":
+                records = [r for r in records if self._record_month("ledger", json.loads(r["data_json"]), None) == month]
+                if not records:
+                    raise ValueError(f"{month} の古物台帳データがありません")
+                checks = self._validate_ledger(records)
+            else:
+                if json.loads(imp["metadata_json"]).get("as_of") != month:
+                    raise ValueError(f"この取込の基準年月は{month}ではありません")
+                checks = self._validate_inventory(records)
         else:
             checks = self._validate_ledger(records) if imp["kind"] == "ledger" else self.validate(import_id)
 
@@ -1906,6 +1912,8 @@ class TaxSystem:
         output.parent.mkdir(parents=True, exist_ok=True)
         if imp["kind"] == "ledger":
             self._export_ledger(records, output)
+        elif imp["kind"] == "inventory":
+            self._export_inventory(records, output)
         else:
             if not template: raise ValueError("相対表出力には --template-id が必要です")
             self._export_comparison(records, Path(template["stored_path"]), output, preview)
@@ -1920,6 +1928,14 @@ class TaxSystem:
             writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n", quoting=csv.QUOTE_MINIMAL)
             writer.writeheader()
             for record in records: writer.writerow(json.loads(record["data_json"]))
+
+    def _export_inventory(self, records: Iterable[sqlite3.Row], output: Path) -> None:
+        with output.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=INVENTORY_DISPLAY_COLUMNS, lineterminator="\r\n", quoting=csv.QUOTE_MINIMAL)
+            writer.writeheader()
+            for record in records:
+                data = json.loads(record["data_json"])
+                writer.writerow({col: data.get(col, "") for col in INVENTORY_DISPLAY_COLUMNS})
 
     def _export_comparison(self, records: Iterable[sqlite3.Row], template: Path, output: Path, preview: bool) -> None:
         wb = load_workbook(template, read_only=False, data_only=False)

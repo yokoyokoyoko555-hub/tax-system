@@ -194,9 +194,7 @@
           <td>{{ imp.imported_at }}</td>
           <td>
             <a class="button small" href="{{ url_for('records_view', import_id=imp.id) }}">中身を見る</a>
-            {% if kind != "inventory" %}
             <a class="button small" href="{{ url_for('validate_import', import_id=imp.id) }}">チェック・出力</a>
-            {% endif %}
             {% if kind == "ledger" %}
             <a class="button small" href="{{ url_for('ledger_completion_view', import_id=imp.id) }}">内訳復元</a>
             {% endif %}
