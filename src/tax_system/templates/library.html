@@ -112,17 +112,19 @@
   <section class="card level-error">
     <h2>仕入先が重複している可能性（{{ purchase_reuse|length }}件）</h2>
     <p class="lead">
-      仕入側（相手方名・年月日・品目/特徴）が完全に一致する行が、複数の販売行にまたがって
-      見つかりました。実際には1回しか仕入れていないものを、誤って2件以上の販売に対応付けて
-      いる（二重に売上計上している）おそれがあります。内容を確認し、誤りであれば片方を
-      削除してください。
+      同じ仕入先・仕入年月日・商品（品目/特徴）の行が、内容の違う複数の販売行に
+      対応付けられています。下の「販売日・販売先・販売額」が行ごとに違うのに仕入側だけが
+      同じ場合、実際には1回しか仕入れていないものを誤って2件以上の販売に対応付けている
+      （二重に売上計上している）おそれがあります。内容を確認し、誤りであれば片方を
+      削除してください。同じ人から同じ日に同じ商品を複数回買うこともあるため、
+      問題なければ削除する必要はありません。
     </p>
     {% for group in purchase_reuse %}
     <table style="margin-bottom:1rem;">
       <caption class="muted" style="text-align:left; caption-side:top;">
-        {{ group.vendor }} / {{ group.date }} / {{ group.product }}
+        仕入先: {{ group.vendor }} ｜ 仕入年月日: {{ group.date }} ｜ 商品: {{ group.product }}
       </caption>
-      <thead><tr><th>取込ID</th><th>ファイル名</th><th>シート</th><th>行</th><th></th></tr></thead>
+      <thead><tr><th>取込ID</th><th>ファイル名</th><th>シート</th><th>行</th><th>販売日</th><th>販売先</th><th>販売額</th><th></th></tr></thead>
       <tbody>
         {% for occ in group.occurrences %}
         <tr class="level-error">
@@ -130,8 +132,11 @@
           <td>{{ occ.source_name }}</td>
           <td>{{ occ.sheet }}</td>
           <td>{{ occ.row_no }}</td>
+          <td>{{ occ.sale_date }}</td>
+          <td>{{ occ.sale_buyer }}</td>
+          <td>{{ occ.sale_amount | num if occ.sale_amount is not none else "" }}</td>
           <td>
-            <a class="button small" href="{{ url_for('records_view', import_id=occ.import_id, sheet=occ.sheet) }}">中身を見る</a>
+            <a class="button small" href="{{ url_for('records_view', import_id=occ.import_id, sheet=occ.sheet, page=occ.page) }}">中身を見る</a>
             <form method="post" action="{{ url_for('comparison_duplicate_delete') }}" style="display:inline;">
               <input type="hidden" name="import_id" value="{{ occ.import_id }}">
               <input type="hidden" name="sheet" value="{{ occ.sheet }}">

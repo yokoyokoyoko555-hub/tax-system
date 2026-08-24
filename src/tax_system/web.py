@@ -91,6 +91,9 @@ def create_app(home: str | Path | None = None) -> Flask:
             comparison_months = ts.comparison_month_summary()
             duplicates = ts.find_comparison_duplicates()
             purchase_reuse = ts.find_comparison_purchase_reuse()
+            for group in purchase_reuse:
+                for occ in group["occurrences"]:
+                    occ["page"] = ts.records_page_for_row(occ["import_id"], occ["sheet"], occ["row_no"])
         return render_template(
             "library.html", kind=kind, imports=imports, merged=merged, months=months,
             ledger_duplicates=ledger_duplicates, ledger_dup_total=len(ledger_duplicates_all or []),

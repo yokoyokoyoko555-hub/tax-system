@@ -624,6 +624,21 @@ class TaxSystem:
             return None
         return f"{d.year:04d}-{d.month:02d}" if d else None
 
+    def records_page_for_row(self, import_id: int, sheet: str | None, row_no: int, per_page: int = 100) -> int:
+        """records_view の一覧（sheet_name, row_no順）で、指定した行が何ページ目に
+        表示されるかを求める。行番号は欠番がありうるため、単純な割り算では出せない。
+        """
+        where = "import_id=?"
+        params: list[Any] = [import_id]
+        if sheet is not None:
+            where += " AND sheet_name=?"
+            params.append(sheet)
+        where += " AND row_no<=?"
+        params.append(row_no)
+        with closing(self.connect()) as db, db:
+            position = db.execute(f"SELECT COUNT(*) FROM records WHERE {where}", params).fetchone()[0]
+        return max(1, -(-position // per_page))
+
     def get_records(self, import_id: int, sheet: str | None = None, month: str | None = None,
                     sort: str | None = None, sort_dir: str = "asc",
                     offset: int = 0, limit: int = 100) -> tuple[list[dict[str, Any]], int]:
@@ -833,11 +848,17 @@ class TaxSystem:
                 continue
             name = str(purchase[name_idx]).strip()
             purchase_date = purchase[0]
+            sale_headers = headers[split:]
+            sale_amount_idx = _index_of(sale_headers, "代価", contains=True)
+            sale_buyer_idx = _index_of(sale_headers, "相手方名")
             key = (name, str(purchase_date) if purchase_date else None, descriptor)
             groups.setdefault(key, []).append({
                 "import_id": row["import_id"], "source_name": row["source_name"],
                 "sheet": row["sheet_name"], "row_no": row["row_no"],
                 "vendor": name, "date": purchase_date, "product": descriptor,
+                "sale_date": sale[0],
+                "sale_amount": sale[sale_amount_idx] if sale_amount_idx is not None else None,
+                "sale_buyer": sale[sale_buyer_idx] if sale_buyer_idx is not None else None,
             })
         return [
             {"vendor": key[0], "date": key[1], "product": key[2], "occurrences": occurrences}

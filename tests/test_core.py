@@ -1429,6 +1429,36 @@ class ComparisonPurchaseReuseTests(unittest.TestCase):
 
         self.assertEqual([], self.app.find_comparison_purchase_reuse())
 
+    def test_occurrences_include_sale_side_details_for_display(self):
+        self.app.import_comparison(self.write_comparison_xlsx([
+            ("2026-05-01", "特定カードX", "下置 誠龍", "2026-06-03", 17800, "海外客1"),
+            ("2026-05-01", "特定カードX", "下置 誠龍", "2026-06-10", 15000, "海外客2"),
+        ]))
+
+        occurrences = self.app.find_comparison_purchase_reuse()[0]["occurrences"]
+        by_buyer = {o["sale_buyer"]: o for o in occurrences}
+        self.assertEqual("2026-06-03", by_buyer["海外客1"]["sale_date"])
+        self.assertEqual(17800, by_buyer["海外客1"]["sale_amount"])
+        self.assertEqual("2026-06-10", by_buyer["海外客2"]["sale_date"])
+        self.assertEqual(15000, by_buyer["海外客2"]["sale_amount"])
+
+    def test_records_page_for_row_finds_correct_page(self):
+        rows = [
+            ("2026-05-01", f"カード{i}", "下置 誠龍", "2026-06-03", 1000, "海外客")
+            for i in range(150)
+        ]
+        comparison_id = self.app.import_comparison(self.write_comparison_xlsx(rows))
+
+        with closing(self.app.connect()) as db, db:
+            row_nos = [r["row_no"] for r in db.execute(
+                "SELECT row_no FROM records WHERE import_id=? ORDER BY row_no", (comparison_id,)
+            ).fetchall()]
+
+        self.assertEqual(1, self.app.records_page_for_row(comparison_id, "輸出販売", row_nos[0]))
+        self.assertEqual(1, self.app.records_page_for_row(comparison_id, "輸出販売", row_nos[99]))
+        self.assertEqual(2, self.app.records_page_for_row(comparison_id, "輸出販売", row_nos[100]))
+        self.assertEqual(2, self.app.records_page_for_row(comparison_id, "輸出販売", row_nos[149]))
+
 
 class DeleteImportsTests(unittest.TestCase):
     def setUp(self):
