@@ -85,6 +85,25 @@ class LedgerTests(unittest.TestCase):
         desc, _ = self.app.get_records(import_id, sort="金額", sort_dir="desc")
         self.assertEqual(["300", "200", "100"], [r["data"]["金額"] for r in desc])
 
+    def test_get_records_can_filter_to_a_single_row(self):
+        path = self.root / "ledger.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            for amount in (300, 100, 200):
+                writer.writerow(dict(zip(LEDGER_COLUMNS, [
+                    "2026-01-01", f"名前{amount}", "", "", "住所", "000", "商品", "1", str(amount), str(amount), "",
+                ])))
+        import_id = self.app.import_ledger(path)
+        all_rows, _ = self.app.get_records(import_id)
+        target_row_no = all_rows[1]["row_no"]
+
+        rows, total = self.app.get_records(import_id, row_no=target_row_no)
+
+        self.assertEqual(1, total)
+        self.assertEqual(1, len(rows))
+        self.assertEqual(target_row_no, rows[0]["row_no"])
+
     def test_export_can_filter_to_a_single_month(self):
         path = self.root / "ledger.csv"
         with path.open("w", encoding="utf-8-sig", newline="") as fh:

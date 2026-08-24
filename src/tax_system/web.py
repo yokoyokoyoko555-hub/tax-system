@@ -91,9 +91,6 @@ def create_app(home: str | Path | None = None) -> Flask:
             comparison_months = ts.comparison_month_summary()
             duplicates = ts.find_comparison_duplicates()
             purchase_reuse = ts.find_comparison_purchase_reuse()
-            for group in purchase_reuse:
-                for occ in group["occurrences"]:
-                    occ["page"] = ts.records_page_for_row(occ["import_id"], occ["sheet"], occ["row_no"])
         return render_template(
             "library.html", kind=kind, imports=imports, merged=merged, months=months,
             ledger_duplicates=ledger_duplicates, ledger_dup_total=len(ledger_duplicates_all or []),
@@ -284,8 +281,9 @@ def create_app(home: str | Path | None = None) -> Flask:
             month = months[-1]
         sort = request.args.get("sort") or None
         sort_dir = "desc" if request.args.get("dir") == "desc" else "asc"
+        row_no = request.args.get("row_no", type=int)
         rows, total = ts.get_records(
-            import_id, sheet=sheet, month=month, sort=sort, sort_dir=sort_dir,
+            import_id, sheet=sheet, month=month, sort=sort, sort_dir=sort_dir, row_no=row_no,
             offset=(page - 1) * per_page, limit=per_page,
         )
         headers = next((s["headers"] for s in imp["metadata"].get("sheets", []) if s["name"] == sheet), None)
@@ -305,7 +303,7 @@ def create_app(home: str | Path | None = None) -> Flask:
             "records.html", imp=imp, rows=rows, headers=display_headers,
             flat_columns=FLAT_COLUMNS.get(imp["kind"]),
             sheets=sheets, sheet=sheet, months=months, month=month,
-            sort=sort, sort_dir=sort_dir, sibling_imports=sibling_imports,
+            sort=sort, sort_dir=sort_dir, sibling_imports=sibling_imports, row_no=row_no,
             page=page, total=total, total_pages=total_pages,
         )
 

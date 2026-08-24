@@ -641,12 +641,15 @@ class TaxSystem:
 
     def get_records(self, import_id: int, sheet: str | None = None, month: str | None = None,
                     sort: str | None = None, sort_dir: str = "asc",
-                    offset: int = 0, limit: int = 100) -> tuple[list[dict[str, Any]], int]:
+                    offset: int = 0, limit: int = 100, row_no: int | None = None) -> tuple[list[dict[str, Any]], int]:
         where = "import_id=?"
         params: list[Any] = [import_id]
         if sheet is not None:
             where += " AND sheet_name=?"
             params.append(sheet)
+        if row_no is not None:
+            where += " AND row_no=?"
+            params.append(row_no)
         if month is None and sort is None:
             with closing(self.connect()) as db, db:
                 total = db.execute(f"SELECT COUNT(*) FROM records WHERE {where}", params).fetchone()[0]
