@@ -363,6 +363,58 @@ class LedgerCompletionTests(unittest.TestCase):
         self.assertEqual(1, len(self.app.propose_ledger_breakdown(ledger_id, month="2026-05")))
         self.assertEqual(0, len(self.app.propose_ledger_breakdown(ledger_id, month="2026-04")))
 
+    def test_breakdown_prefers_feature_over_generic_product_name(self):
+        # 品目 is a generic category (e.g. "ワンピースカード"); 特徴 is the specific card.
+        # The breakdown must report the specific card, matching fill_comparison_purchase_from_ledger.
+        self.import_inventory_for("2026-05")
+        ledger_id = self.app.import_ledger(self.write_ledger_lump(5000))
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "輸出販売"
+        headers = ["年月日", "品目", "特徴", "数量", "相手方名", "代価", "年月日", "数量"]
+        for col, value in enumerate(headers, 1):
+            ws.cell(2, col).value = value
+        ws.cell(3, 1).value = "2026-05-01"
+        ws.cell(3, 2).value = "ワンピースカード"
+        ws.cell(3, 3).value = "テストカードA"
+        ws.cell(3, 4).value = 1
+        ws.cell(3, 5).value = "鈴木一郎"
+        ws.cell(3, 6).value = 5000
+        ws.cell(3, 7).value = "2026-06-01"
+        ws.cell(3, 8).value = 1
+        path = self.root / "comparison.xlsx"
+        wb.save(path)
+        self.app.import_comparison(path)
+
+        breakdown = self.app.propose_ledger_breakdown(ledger_id)
+
+        self.assertEqual(1, len(breakdown[0]["known_items"]))
+        self.assertEqual("テストカードA", breakdown[0]["known_items"][0]["product"])
+
+    def test_breakdown_falls_back_to_manually_linked_amount_without_inventory_cost(self):
+        # when the specific card has no 期末在庫表 cost on file, the breakdown should still
+        # count the amount the user manually prorated when linking, instead of ignoring it.
+        ledger_id = self.app.import_ledger(self.write_ledger_lump(50000))
+        comparison_id = self.app.import_comparison(self.write_comparison([
+            (["", "モンキー・D・ルフィ", "", "", ""], ["2026-06-01", 1]),
+        ]))
+        records, _ = self.app.get_records(ledger_id)
+        ledger_record_id = records[0]["id"]
+        records, _ = self.app.get_records(comparison_id)
+        row_no = records[0]["row_no"]
+
+        self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", row_no, ledger_record_id,
+                                                    qty=1, amount=25000)
+
+        breakdown = self.app.propose_ledger_breakdown(ledger_id)
+
+        self.assertEqual(1, len(breakdown[0]["known_items"]))
+        item = breakdown[0]["known_items"][0]
+        self.assertEqual("モンキー・D・ルフィ", item["product"])
+        self.assertIsNone(item["unit_cost"])
+        self.assertEqual(25000, item["amount"])
+        self.assertEqual(25000, breakdown[0]["remainder"])
+
     def test_add_ledger_item_rejects_non_matching_month_inventory(self):
         # inventory is only available for April; the ledger row is from May, so no
         # inventory should be usable for it, even though a (different-month) snapshot exists.
@@ -1588,6 +1640,25 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
         by_row = {r["row_no"]: r["data"]["values"] for r in records}
         self.assertEqual(500, by_row[3][7])
         self.assertEqual(300, by_row[4][7])
+
+    def test_note_is_generic_when_ledger_product_name_is_blank(self):
+        # 明細未作成 (a purchase header with no 商品名 yet, e.g. an unopened box that hasn't
+        # been itemized) must not produce an awkward empty-quotes note like 「」.
+        ledger_id = self.app.import_ledger(self.write_ledger([
+            ["2026-05-01", "箱売り太郎", "はこうりたろう", "1990-01-01", "住所", "000", "", "1", "50000", "50000", ""],
+        ]))
+        comparison_id = self.app.import_comparison(self.write_comparison_xlsx([
+            ("モンキー・D・ルフィ 【SR】【パラレル】", "2026-06-03", 3000, "海外客1"),
+        ]))
+        records, _ = self.app.get_records(ledger_id)
+        ledger_record_id = records[0]["id"]
+
+        self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 3, ledger_record_id, qty=1, amount=500)
+
+        records, _ = self.app.get_records(comparison_id)
+        note = records[0]["data"]["values"][10]
+        self.assertNotIn("「」", note)
+        self.assertEqual("内訳未確定の仕入から案分", note)
 
     def test_raises_when_row_not_found(self):
         ledger_id = self.app.import_ledger(self.write_ledger([

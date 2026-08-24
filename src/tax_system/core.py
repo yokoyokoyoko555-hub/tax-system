@@ -1260,7 +1260,7 @@ class TaxSystem:
         if name_idx is not None:
             values[name_idx] = ledger_name
         if note_idx is not None:
-            note = f"未開封品「{ledger_product}」より案分"
+            note = f"未開封品「{ledger_product}」より案分" if ledger_product else "内訳未確定の仕入から案分"
             values[note_idx] = f"{values[note_idx]} {note}".strip() if values[note_idx] else note
         data["values"] = values
 
@@ -1367,18 +1367,28 @@ class TaxSystem:
             if sale[0] in (None, ""):
                 continue
             purchase_headers = headers[:split]
+            feature_idx = _index_of(purchase_headers, "特徴")
             product_idx = _index_of(purchase_headers, "品目")
+            amount_idx = _index_of(purchase_headers, "代価", contains=True)
             qty_idx = _index_of(purchase_headers, "数量")
             name_idx = _index_of(purchase_headers, "相手方名")
-            if product_idx is None or name_idx is None:
+            if name_idx is None or (feature_idx is None and product_idx is None):
                 continue
-            product = str(purchase[product_idx]).strip() if purchase[product_idx] not in (None, "") else None
+            if feature_idx is not None and purchase[feature_idx] not in (None, ""):
+                product = str(purchase[feature_idx]).strip()
+            elif product_idx is not None and purchase[product_idx] not in (None, ""):
+                product = str(purchase[product_idx]).strip()
+            else:
+                product = None
             counterparty = str(purchase[name_idx]).strip() if purchase[name_idx] not in (None, "") else None
             qty = _to_number(purchase[qty_idx]) if qty_idx is not None else None
+            manual_amount = _to_number(purchase[amount_idx]) if amount_idx is not None else None
             purchase_date = _to_date(purchase[0])
             if not product or not counterparty:
                 continue
-            comparison_by_key.setdefault((counterparty, purchase_date), []).append({"product": product, "qty": qty or 0})
+            comparison_by_key.setdefault((counterparty, purchase_date), []).append(
+                {"product": product, "qty": qty or 0, "manual_amount": manual_amount}
+            )
 
         manual_by_row: dict[int, list[dict[str, Any]]] = {}
         for item in manual_items:
@@ -1402,9 +1412,10 @@ class TaxSystem:
             for entry in comparison_by_key.get((name, purchase_date), []):
                 cost = inventory.get(entry["product"])
                 qty = entry["qty"]
+                amount = (cost * qty) if cost is not None else entry.get("manual_amount")
                 known.append({
                     "product": entry["product"], "qty": qty, "unit_cost": cost,
-                    "amount": (cost * qty) if cost is not None else None, "source": "comparison",
+                    "amount": amount, "source": "comparison",
                 })
             manual = [{
                 "id": item["id"], "product": item["product"], "qty": item["qty"],

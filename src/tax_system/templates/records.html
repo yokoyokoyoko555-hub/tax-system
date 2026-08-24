@@ -111,12 +111,15 @@
     未開封品を仕入れて開封後に個別の商品として売った場合など、対応する古物台帳の商品名が
     そのままでは一致しない場合は、ここから古物台帳を検索して手動で紐づけ、案分した数量・金額を
     入力してください。ここで選んだ古物台帳の記録は「使用済み」にはならないため、同じ未開封品から
-    複数の商品を案分して繰り返し紐づけることができます。
+    複数の商品を案分して繰り返し紐づけることができます。<br>
+    商品名（例:「未開封」）で見つからない場合は、氏名で検索してください。過去に仕入れたが
+    まだ商品名を明細登録していない古物台帳（商品名が空欄の行）も、氏名でなら見つかります。
+    その行に紐づけると、この売上の商品が古物台帳側の「内訳確定」画面にも自動で反映されます。
   </p>
   <form method="get" action="{{ url_for('records_view', import_id=imp.id) }}">
     <input type="hidden" name="sheet" value="{{ sheet }}">
     <input type="hidden" name="row_no" value="{{ row_no }}">
-    <input type="text" name="q" placeholder="商品名・氏名で検索" value="{{ query }}">
+    <input type="text" name="q" placeholder="商品名または氏名で検索" value="{{ query }}">
     <button type="submit" class="button small">検索</button>
   </form>
   {% if query %}
@@ -129,7 +132,7 @@
         <input type="hidden" name="sheet" value="{{ sheet }}">
         <input type="hidden" name="row_no" value="{{ row_no }}">
         <input type="hidden" name="ledger_record_id" value="{{ r.id }}">
-        <span style="flex:1;">{{ r.name }} / {{ r.product }} / {{ r.date }} / 仕入合計{{ r.amount | num }}円</span>
+        <span style="flex:1;">{{ r.name }} / {{ r.product or "（商品名未登録）" }} / {{ r.date }} / 仕入合計{{ r.amount | num }}円</span>
         <label>数量 <input type="number" name="qty" step="any" min="0" value="1" required style="width:5em;"></label>
         <label>案分金額 <input type="number" name="amount" step="any" min="0" required style="width:8em;"></label>
         <button type="submit" class="button small">この仕入に紐づける</button>
