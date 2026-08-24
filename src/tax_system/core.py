@@ -1200,6 +1200,80 @@ class TaxSystem:
                 (comparison_import_id, sheet, row_no, ledger_record_id, "manual", "[]", None, now),
             )
 
+    def link_comparison_purchase_manually(self, import_id: int, sheet: str, row_no: int,
+                                          ledger_record_id: int, qty: float, amount: float) -> None:
+        """相対表の仕入側が空欄の行に、古物台帳の購入記録を手動で紐づけて書き込む。
+        未開封品を仕入れて開封後に個別の商品として売った場合など、商品名が完全一致しないため
+        自動一致（fill_comparison_purchase_from_ledger）では埋まらないケース向け。数量・金額
+        （案分した額）は人が入力する。1件の未開封品から複数の商品を案分して売ることがあるため、
+        通常の自動一致とは異なり、この古物台帳の記録を「使用済み」にはしない（他の行でも重ねて
+        選べる）。
+        """
+        with closing(self.connect()) as db, db:
+            record = db.execute(
+                "SELECT r.data_json, i.metadata_json FROM records r JOIN imports i ON r.import_id=i.id "
+                "WHERE r.import_id=? AND r.sheet_name=? AND r.row_no=? AND i.kind='comparison'",
+                (import_id, sheet, row_no),
+            ).fetchone()
+            if not record:
+                raise ValueError("対象の行が見つかりません")
+            ledger_row = db.execute("SELECT data_json FROM records WHERE id=?", (ledger_record_id,)).fetchone()
+            if not ledger_row:
+                raise ValueError("対象の古物台帳の記録が見つかりません")
+
+        metadata = json.loads(record["metadata_json"])
+        headers = next((s["headers"] for s in metadata.get("sheets", []) if s["name"] == sheet), None)
+        if not headers:
+            raise ValueError("シートの列構成が見つかりません")
+        split = next((i for i, h in enumerate(headers) if i > 0 and h == "年月日"), None)
+        if split is None:
+            raise ValueError("受入れ・払出しの境界を判定できません")
+        purchase_headers = headers[:split]
+
+        ledger_data = json.loads(ledger_row["data_json"])
+        ledger_date = _to_date(ledger_data.get("日時"))
+        ledger_name = (ledger_data.get("名前") or "").strip()
+        ledger_product = (ledger_data.get("商品名") or "").strip()
+
+        data = json.loads(record["data_json"])
+        values = data["values"]
+        qty_idx = _index_of(purchase_headers, "数量")
+        unit_idx = _index_of(purchase_headers, "単価", contains=True)
+        amount_idx = _index_of(purchase_headers, "代価", contains=True)
+        name_idx = _index_of(purchase_headers, "相手方名")
+        note_idx = _index_of(purchase_headers, "備考")
+
+        values[0] = ledger_date
+        if qty_idx is not None:
+            values[qty_idx] = qty
+        if unit_idx is not None:
+            values[unit_idx] = amount / qty if qty else amount
+        if amount_idx is not None:
+            values[amount_idx] = amount
+        if name_idx is not None:
+            values[name_idx] = ledger_name
+        if note_idx is not None:
+            note = f"未開封品「{ledger_product}」より案分"
+            values[note_idx] = f"{values[note_idx]} {note}".strip() if values[note_idx] else note
+        data["values"] = values
+
+        now = datetime.now().isoformat(timespec="seconds")
+        with closing(self.connect()) as db, db:
+            db.execute(
+                "UPDATE records SET data_json=? WHERE import_id=? AND sheet_name=? AND row_no=?",
+                (json_text(data), import_id, sheet, row_no),
+            )
+            db.execute(
+                """INSERT INTO allocations(sale_import_id, sale_sheet, sale_row_no, ledger_record_id, status, candidates_json, note, created_at)
+                   VALUES(?,?,?,?,?,?,?,?)
+                   ON CONFLICT(sale_import_id, sale_sheet, sale_row_no) DO UPDATE SET
+                     ledger_record_id=excluded.ledger_record_id, status=excluded.status,
+                     candidates_json=excluded.candidates_json, note=excluded.note, created_at=excluded.created_at
+                """,
+                (import_id, sheet, row_no, ledger_record_id, "manual_split", "[]",
+                 f"未開封品から案分（数量{qty}・金額{amount}円）", now),
+            )
+
     def _inventory_for_month(self, month: str | None) -> dict[str, float]:
         """指定した基準年月（例: "2026-04"）と一致する期末在庫表から、商品名と仕入れ原価の
         対応を返す。より新しい基準月の在庫表を代わりに使うと、対象月にはまだ仕入れていない

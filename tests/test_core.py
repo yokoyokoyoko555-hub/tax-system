@@ -1479,6 +1479,114 @@ class ComparisonPurchaseReuseTests(unittest.TestCase):
         self.assertEqual(2, self.app.records_page_for_row(comparison_id, "輸出販売", row_nos[149]))
 
 
+class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
+    # same real-world header layout used elsewhere: 品目=category, 特徴=specific item.
+    HEADERS = [
+        "年月日", "区別", "品目", "特徴", "Cert#", "単価(税込）", "数量", "代価（税込）", "種類", "相手方名", "備考",
+        "年月日", "区分", "単価（JPY）", "数量", "代価（JPY）", "相手方名", "支払方法", "通貨",
+    ]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.app = TaxSystem(self.root / "runtime")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_ledger(self, rows, name="ledger.csv"):
+        path = self.root / name
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(dict(zip(LEDGER_COLUMNS, row)))
+        return path
+
+    def write_comparison_xlsx(self, rows, name="comparison.xlsx", sheet_name="輸出販売"):
+        # rows: list of (feature, sale_date, sale_amount, buyer) — purchase side left blank
+        wb = Workbook()
+        ws = wb.active
+        ws.title = sheet_name
+        for col, value in enumerate(self.HEADERS, 1):
+            ws.cell(2, col).value = value
+        for r, (feature, sale_date, sale_amount, buyer) in enumerate(rows, 3):
+            ws.cell(r, 2).value = "買受"
+            ws.cell(r, 3).value = "未開封BOXより"
+            ws.cell(r, 4).value = feature
+            ws.cell(r, 5).value = "ー"
+            ws.cell(r, 12).value = sale_date
+            ws.cell(r, 13).value = "売却（輸出）"
+            ws.cell(r, 16).value = sale_amount
+            ws.cell(r, 17).value = buyer
+            ws.cell(r, 18).value = "クレジットカード"
+            ws.cell(r, 19).value = "JPY"
+        path = self.root / name
+        wb.save(path)
+        return path
+
+    def test_fills_purchase_side_with_manual_prorated_amount(self):
+        ledger_id = self.app.import_ledger(self.write_ledger([
+            ["2026-05-01", "箱売り太郎", "はこうりたろう", "1990-01-01", "住所", "000",
+             "未開封BOX ワンピースカード OP-01", "1", "50000", "50000", ""],
+        ]))
+        comparison_id = self.app.import_comparison(self.write_comparison_xlsx([
+            ("モンキー・D・ルフィ 【SR】【パラレル】", "2026-06-03", 3000, "海外客1"),
+        ]))
+        records, _ = self.app.get_records(ledger_id)
+        ledger_record_id = records[0]["id"]
+
+        self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 3, ledger_record_id, qty=1, amount=500)
+
+        records, _ = self.app.get_records(comparison_id)
+        values = records[0]["data"]["values"]
+        self.assertEqual("2026-05-01", str(values[0]))  # 年月日
+        self.assertEqual(1, values[6])                  # 数量
+        self.assertEqual(500, values[5])                 # 単価(税込)
+        self.assertEqual(500, values[7])                 # 代価（税込）
+        self.assertEqual("箱売り太郎", values[9])         # 相手方名
+        self.assertIn("未開封BOX", values[10])            # 備考
+
+    def test_ledger_record_stays_available_for_reuse_on_another_row(self):
+        # one unopened box can be prorated across many individually-sold cards, so linking
+        # it once must not mark it "consumed" the way fill_comparison_purchase_from_ledger does.
+        ledger_id = self.app.import_ledger(self.write_ledger([
+            ["2026-05-01", "箱売り太郎", "はこうりたろう", "1990-01-01", "住所", "000",
+             "未開封BOX ワンピースカード OP-01", "1", "50000", "50000", ""],
+        ]))
+        comparison_id = self.app.import_comparison(self.write_comparison_xlsx([
+            ("モンキー・D・ルフィ 【SR】【パラレル】", "2026-06-03", 3000, "海外客1"),
+            ("ナミ 【SR】【パラレル】", "2026-06-04", 2000, "海外客2"),
+        ]))
+        records, _ = self.app.get_records(ledger_id)
+        ledger_record_id = records[0]["id"]
+
+        self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 3, ledger_record_id, qty=1, amount=500)
+        # still findable/usable for a second row from the same box
+        self.assertTrue(any(c["id"] == ledger_record_id for c in self.app.search_ledger("未開封BOX")))
+        self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 4, ledger_record_id, qty=1, amount=300)
+
+        records, _ = self.app.get_records(comparison_id)
+        by_row = {r["row_no"]: r["data"]["values"] for r in records}
+        self.assertEqual(500, by_row[3][7])
+        self.assertEqual(300, by_row[4][7])
+
+    def test_raises_when_row_not_found(self):
+        ledger_id = self.app.import_ledger(self.write_ledger([
+            ["2026-05-01", "箱売り太郎", "", "", "", "", "未開封BOX", "1", "50000", "50000", ""],
+        ]))
+        records, _ = self.app.get_records(ledger_id)
+        with self.assertRaises(ValueError):
+            self.app.link_comparison_purchase_manually(99999, "輸出販売", 3, records[0]["id"], qty=1, amount=500)
+
+    def test_raises_when_ledger_record_not_found(self):
+        comparison_id = self.app.import_comparison(self.write_comparison_xlsx([
+            ("モンキー・D・ルフィ 【SR】【パラレル】", "2026-06-03", 3000, "海外客1"),
+        ]))
+        with self.assertRaises(ValueError):
+            self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 3, 99999, qty=1, amount=500)
+
+
 class DeleteImportsTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

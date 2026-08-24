@@ -99,5 +99,45 @@
 </p>
 {% endif %}
 
+{% if purchase_blank %}
+<section class="card">
+  <h2>古物台帳から手動で仕入を紐づける</h2>
+  <p class="lead">
+    通常の自動一致（古物台帳から仕入側を埋める）は商品名が完全に一致する古物台帳しか使えません。
+    未開封品を仕入れて開封後に個別の商品として売った場合など、対応する古物台帳の商品名が
+    そのままでは一致しない場合は、ここから古物台帳を検索して手動で紐づけ、案分した数量・金額を
+    入力してください。ここで選んだ古物台帳の記録は「使用済み」にはならないため、同じ未開封品から
+    複数の商品を案分して繰り返し紐づけることができます。
+  </p>
+  <form method="get" action="{{ url_for('records_view', import_id=imp.id) }}">
+    <input type="hidden" name="sheet" value="{{ sheet }}">
+    <input type="hidden" name="row_no" value="{{ row_no }}">
+    <input type="text" name="q" placeholder="商品名・氏名で検索" value="{{ query }}">
+    <button type="submit" class="button small">検索</button>
+  </form>
+  {% if query %}
+    {% if search_results %}
+    <div>
+      {% for r in search_results %}
+      <form method="post" action="{{ url_for('comparison_link_purchase') }}"
+            style="display:flex; gap:0.5rem; align-items:center; margin:0.4rem 0;">
+        <input type="hidden" name="import_id" value="{{ imp.id }}">
+        <input type="hidden" name="sheet" value="{{ sheet }}">
+        <input type="hidden" name="row_no" value="{{ row_no }}">
+        <input type="hidden" name="ledger_record_id" value="{{ r.id }}">
+        <span style="flex:1;">{{ r.name }} / {{ r.product }} / {{ r.date }} / 仕入合計{{ r.amount | num }}円</span>
+        <label>数量 <input type="number" name="qty" step="any" min="0" value="1" required style="width:5em;"></label>
+        <label>案分金額 <input type="number" name="amount" step="any" min="0" required style="width:8em;"></label>
+        <button type="submit" class="button small">この仕入に紐づける</button>
+      </form>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="muted">該当する古物台帳の記録が見つかりません</p>
+    {% endif %}
+  {% endif %}
+</section>
+{% endif %}
+
 <p class="muted"><a href="{{ url_for('validate_import', import_id=imp.id) }}">チェック結果に戻る</a></p>
 {% endblock %}

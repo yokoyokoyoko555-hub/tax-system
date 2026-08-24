@@ -299,13 +299,37 @@ def create_app(home: str | Path | None = None) -> Flask:
             )
             for i in sibling_imports:
                 i["label"] = Path(i["source_name"]).stem
+        purchase_blank = (
+            imp["kind"] == "comparison" and row_no is not None
+            and len(rows) == 1 and rows[0].get("cells") and rows[0]["cells"][0] in (None, "")
+        )
+        query = request.args.get("q", "").strip()
+        search_results = ts.search_ledger(query) if purchase_blank and query else []
         return render_template(
             "records.html", imp=imp, rows=rows, headers=display_headers,
             flat_columns=FLAT_COLUMNS.get(imp["kind"]),
             sheets=sheets, sheet=sheet, months=months, month=month,
             sort=sort, sort_dir=sort_dir, sibling_imports=sibling_imports, row_no=row_no,
+            purchase_blank=purchase_blank, query=query, search_results=search_results,
             page=page, total=total, total_pages=total_pages,
         )
+
+    @app.route("/comparison/link-purchase", methods=["POST"])
+    def comparison_link_purchase():
+        ts = system()
+        import_id = int(request.form["import_id"])
+        sheet = request.form["sheet"]
+        row_no = int(request.form["row_no"])
+        ledger_record_id = int(request.form["ledger_record_id"])
+        try:
+            qty = float(request.form["qty"])
+            amount = float(request.form["amount"])
+            ts.link_comparison_purchase_manually(import_id, sheet, row_no, ledger_record_id, qty, amount)
+        except (ValueError, TypeError) as exc:
+            flash(f"紐づけに失敗しました: {exc}", "error")
+        else:
+            flash("古物台帳の記録を手動で紐づけました", "success")
+        return redirect(url_for("records_view", import_id=import_id, sheet=sheet, row_no=row_no))
 
     @app.route("/ledger-completion/<int:import_id>")
     def ledger_completion_view(import_id: int):
