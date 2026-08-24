@@ -640,16 +640,23 @@ class TaxSystem:
         return max(1, -(-position // per_page))
 
     def get_records(self, import_id: int, sheet: str | None = None, month: str | None = None,
-                    sort: str | None = None, sort_dir: str = "asc",
-                    offset: int = 0, limit: int = 100, row_no: int | None = None) -> tuple[list[dict[str, Any]], int]:
+                    sort: str | None = None, sort_dir: str = "asc", offset: int = 0, limit: int = 100,
+                    row_no: int | list[int] | None = None) -> tuple[list[dict[str, Any]], int]:
         where = "import_id=?"
         params: list[Any] = [import_id]
         if sheet is not None:
             where += " AND sheet_name=?"
             params.append(sheet)
         if row_no is not None:
-            where += " AND row_no=?"
-            params.append(row_no)
+            if isinstance(row_no, (list, tuple, set)):
+                row_no_list = list(row_no)
+                if not row_no_list:
+                    return [], 0
+                where += f" AND row_no IN ({','.join('?' * len(row_no_list))})"
+                params.extend(row_no_list)
+            else:
+                where += " AND row_no=?"
+                params.append(row_no)
         if month is None and sort is None:
             with closing(self.connect()) as db, db:
                 total = db.execute(f"SELECT COUNT(*) FROM records WHERE {where}", params).fetchone()[0]

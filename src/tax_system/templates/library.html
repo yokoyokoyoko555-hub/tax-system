@@ -123,6 +123,11 @@
     <table style="margin-bottom:1rem;">
       <caption class="muted" style="text-align:left; caption-side:top;">
         仕入先: {{ group.vendor }} ｜ 仕入年月日: {{ group.date }} ｜ 商品: {{ group.product }}
+        {% for link in group.view_links %}
+          {% if link.row_nos|length > 1 %}
+          ｜ <a href="{{ url_for('records_view', import_id=link.import_id, sheet=link.sheet, row_no=link.row_nos) }}">この{{ link.row_nos|length }}行をまとめて見る</a>
+          {% endif %}
+        {% endfor %}
       </caption>
       <thead><tr><th>取込ID</th><th>ファイル名</th><th>シート</th><th>行</th><th>販売日</th><th>販売先</th><th>販売額</th><th></th></tr></thead>
       <tbody>

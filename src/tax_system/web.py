@@ -91,6 +91,14 @@ def create_app(home: str | Path | None = None) -> Flask:
             comparison_months = ts.comparison_month_summary()
             duplicates = ts.find_comparison_duplicates()
             purchase_reuse = ts.find_comparison_purchase_reuse()
+            for group in purchase_reuse:
+                by_file: dict[tuple[int, str], list[int]] = {}
+                for occ in group["occurrences"]:
+                    by_file.setdefault((occ["import_id"], occ["sheet"]), []).append(occ["row_no"])
+                group["view_links"] = [
+                    {"import_id": import_id, "sheet": sheet, "row_nos": row_nos}
+                    for (import_id, sheet), row_nos in by_file.items()
+                ]
         return render_template(
             "library.html", kind=kind, imports=imports, merged=merged, months=months,
             ledger_duplicates=ledger_duplicates, ledger_dup_total=len(ledger_duplicates_all or []),
@@ -281,7 +289,8 @@ def create_app(home: str | Path | None = None) -> Flask:
             month = months[-1]
         sort = request.args.get("sort") or None
         sort_dir = "desc" if request.args.get("dir") == "desc" else "asc"
-        row_no = request.args.get("row_no", type=int)
+        row_no_list = request.args.getlist("row_no", type=int)
+        row_no = row_no_list[0] if len(row_no_list) == 1 else (row_no_list or None)
         rows, total = ts.get_records(
             import_id, sheet=sheet, month=month, sort=sort, sort_dir=sort_dir, row_no=row_no,
             offset=(page - 1) * per_page, limit=per_page,
@@ -300,7 +309,7 @@ def create_app(home: str | Path | None = None) -> Flask:
             for i in sibling_imports:
                 i["label"] = Path(i["source_name"]).stem
         purchase_blank = (
-            imp["kind"] == "comparison" and row_no is not None
+            imp["kind"] == "comparison" and isinstance(row_no, int)
             and len(rows) == 1 and rows[0].get("cells") and rows[0]["cells"][0] in (None, "")
         )
         query = request.args.get("q", "").strip()

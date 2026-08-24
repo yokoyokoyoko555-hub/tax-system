@@ -5,7 +5,11 @@
 <p class="lead">
   取込ID {{ imp.id }}（{{ kind_labels[imp.kind] }} / {{ imp.source_name }} / {{ imp.imported_at }}）<br>
   {% if row_no %}
-    {{ row_no }}行目のみ表示しています。
+    {% if row_no is iterable and row_no is not string %}
+      {{ row_no | join('・') }}行目のみ表示しています。
+    {% else %}
+      {{ row_no }}行目のみ表示しています。
+    {% endif %}
     <a href="{{ url_for('records_view', import_id=imp.id, sheet=sheet, month=month) }}">全件表示に戻る</a>
   {% else %}
     全 {{ total }} 件
