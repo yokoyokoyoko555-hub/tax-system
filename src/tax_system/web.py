@@ -315,13 +315,17 @@ def create_app(home: str | Path | None = None) -> Flask:
             and len(rows) == 1 and rows[0].get("cells") and rows[0]["cells"][0] in (None, "")
         )
         query = request.args.get("q", "").strip()
-        search_results = ts.search_ledger(query) if purchase_blank and query else []
+        search_month = request.args.get("search_month") or None
+        search_results, search_total = (
+            ts.search_ledger(query, month=search_month) if purchase_blank and query else ([], 0)
+        )
         return render_template(
             "records.html", imp=imp, rows=rows, headers=display_headers,
             flat_columns=FLAT_COLUMNS.get(imp["kind"]),
             sheets=sheets, sheet=sheet, months=months, month=month,
             sort=sort, sort_dir=sort_dir, sibling_imports=sibling_imports, row_no=row_no,
-            purchase_blank=purchase_blank, query=query, search_results=search_results,
+            purchase_blank=purchase_blank, query=query, search_month=search_month,
+            search_results=search_results, search_total=search_total,
             page=page, total=total, total_pages=total_pages,
         )
 

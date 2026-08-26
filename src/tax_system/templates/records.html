@@ -114,16 +114,27 @@
     複数の商品を案分して繰り返し紐づけることができます。<br>
     商品名（例:「未開封」）で見つからない場合は、氏名で検索してください。過去に仕入れたが
     まだ商品名を明細登録していない古物台帳（商品名が空欄の行）も、氏名でなら見つかります。
-    その行に紐づけると、この売上の商品が古物台帳側の「内訳確定」画面にも自動で反映されます。
+    その行に紐づけると、この売上の商品が古物台帳側の「内訳確定」画面にも自動で反映されます。<br>
+    一致件数が多いカードは、仕入日が古い順に最大30件だけ表示します（先入れ先出し）。
+    特定の仕入年月に絞りたいときは、下の「仕入年月」も入力してください。
   </p>
   <form method="get" action="{{ url_for('records_view', import_id=imp.id) }}">
     <input type="hidden" name="sheet" value="{{ sheet }}">
     <input type="hidden" name="row_no" value="{{ row_no }}">
     <input type="text" name="q" placeholder="商品名または氏名で検索" value="{{ query }}">
+    <label>仕入年月（任意） <input type="month" name="search_month" value="{{ search_month or '' }}"></label>
     <button type="submit" class="button small">検索</button>
   </form>
   {% if query %}
     {% if search_results %}
+    <p class="muted">
+      {% if search_total > search_results|length %}
+        全{{ search_total }}件中、仕入日が古い{{ search_results|length }}件を表示しています。
+        該当なしの場合は「仕入年月」で絞り込んでください。
+      {% else %}
+        {{ search_total }}件見つかりました。
+      {% endif %}
+    </p>
     <div>
       {% for r in search_results %}
       <form method="post" action="{{ url_for('comparison_link_purchase') }}"

@@ -1165,10 +1165,17 @@ class TaxSystem:
             )
         return results
 
-    def search_ledger(self, query: str, limit: int = 30) -> list[dict[str, Any]]:
+    def search_ledger(self, query: str, month: str | None = None,
+                      limit: int = 30) -> tuple[list[dict[str, Any]], int]:
+        """商品名・氏名で古物台帳を横断検索する。月（例:"2026-06"）を指定すると、
+        その仕入年月の行だけに絞り込む。一致件数がlimitを超える場合は、仕入日が古い順
+        （先入れ先出し。fill_comparison_purchase_from_ledgerの自動一致と同じ考え方）に
+        limit件だけ返す。全体の一致件数は2番目の戻り値でそのまま返すため、呼び出し側は
+        「全N件中M件を表示」のように絞り込み漏れがないことを示せる。
+        """
         query = query.strip()
         if not query:
-            return []
+            return [], 0
         with closing(self.connect()) as db, db:
             rows = db.execute(
                 "SELECT r.id, r.data_json FROM records r JOIN imports i ON r.import_id=i.id WHERE i.kind='ledger' ORDER BY r.id"
@@ -1179,7 +1186,7 @@ class TaxSystem:
                     "SELECT ledger_record_id FROM allocations WHERE ledger_record_id IS NOT NULL AND status IN ('matched','manual')"
                 ).fetchall()
             }
-        result = []
+        matches = []
         for row in rows:
             if row["id"] in consumed:
                 continue
@@ -1187,11 +1194,20 @@ class TaxSystem:
             haystack = f"{data.get('商品名', '')} {data.get('名前', '')}"
             if query not in haystack:
                 continue
-            result.append({"id": row["id"], "name": data.get("名前"), "product": data.get("商品名"),
-                           "qty": data.get("個数"), "date": data.get("日時"), "amount": data.get("金額")})
-            if len(result) >= limit:
-                break
-        return result
+            purchase_date = _to_date(data.get("日時"))
+            if month is not None:
+                row_month = f"{purchase_date.year:04d}-{purchase_date.month:02d}" if purchase_date else None
+                if row_month != month:
+                    continue
+            matches.append({
+                "id": row["id"], "name": data.get("名前"), "product": data.get("商品名"),
+                "qty": data.get("個数"), "date": data.get("日時"), "amount": data.get("金額"),
+                "_sort_date": purchase_date,
+            })
+        matches.sort(key=lambda m: m["_sort_date"] or date.max)
+        for m in matches:
+            del m["_sort_date"]
+        return matches[:limit], len(matches)
 
     def set_manual_allocation(self, comparison_import_id: int, sheet: str, row_no: int,
                               ledger_record_id: int | None) -> None:

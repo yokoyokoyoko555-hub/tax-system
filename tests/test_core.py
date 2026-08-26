@@ -1617,6 +1617,43 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
         self.assertEqual("箱売り太郎", values[9])         # 相手方名
         self.assertIn("未開封BOX", values[10])            # 備考
 
+    def test_search_ledger_caps_results_and_reports_total_match_count(self):
+        # a common card can have far more than 30 unconsumed purchase records; the total
+        # must still be reported so the caller knows results were truncated, not exhaustive.
+        rows = [
+            [f"2026-01-{d:02d}", f"客{d}", "", "", "", "", "同じカード", "1", "1000", "1000", ""]
+            for d in range(1, 32)
+        ]
+        self.app.import_ledger(self.write_ledger(rows))
+
+        results, total = self.app.search_ledger("同じカード")
+
+        self.assertEqual(31, total)
+        self.assertEqual(30, len(results))
+
+    def test_search_ledger_orders_oldest_purchase_first(self):
+        self.app.import_ledger(self.write_ledger([
+            ["2026-03-01", "客A", "", "", "", "", "同じカード", "1", "1000", "1000", ""],
+            ["2026-01-01", "客B", "", "", "", "", "同じカード", "1", "1000", "1000", ""],
+            ["2026-02-01", "客C", "", "", "", "", "同じカード", "1", "1000", "1000", ""],
+        ]))
+
+        results, total = self.app.search_ledger("同じカード")
+
+        self.assertEqual(3, total)
+        self.assertEqual(["客B", "客C", "客A"], [r["name"] for r in results])
+
+    def test_search_ledger_can_narrow_to_a_purchase_month(self):
+        self.app.import_ledger(self.write_ledger([
+            ["2026-01-01", "客A", "", "", "", "", "同じカード", "1", "1000", "1000", ""],
+            ["2026-06-01", "客B", "", "", "", "", "同じカード", "1", "1000", "1000", ""],
+        ]))
+
+        results, total = self.app.search_ledger("同じカード", month="2026-06")
+
+        self.assertEqual(1, total)
+        self.assertEqual("客B", results[0]["name"])
+
     def test_ledger_record_stays_available_for_reuse_on_another_row(self):
         # one unopened box can be prorated across many individually-sold cards, so linking
         # it once must not mark it "consumed" the way fill_comparison_purchase_from_ledger does.
@@ -1633,7 +1670,8 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
 
         self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 3, ledger_record_id, qty=1, amount=500)
         # still findable/usable for a second row from the same box
-        self.assertTrue(any(c["id"] == ledger_record_id for c in self.app.search_ledger("未開封BOX")))
+        results, _ = self.app.search_ledger("未開封BOX")
+        self.assertTrue(any(c["id"] == ledger_record_id for c in results))
         self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 4, ledger_record_id, qty=1, amount=300)
 
         records, _ = self.app.get_records(comparison_id)
