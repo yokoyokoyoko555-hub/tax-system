@@ -285,12 +285,14 @@ def create_app(home: str | Path | None = None) -> Flask:
             sheet = sheets[0]
         months = ts.list_months(import_id) if imp["kind"] in ("ledger", "export_data", "comparison") else []
         month = request.args.get("month") if months else None
-        if months and month not in months:
-            month = months[-1]
         sort = request.args.get("sort") or None
         sort_dir = "desc" if request.args.get("dir") == "desc" else "asc"
         row_no_list = request.args.getlist("row_no", type=int)
         row_no = row_no_list[0] if len(row_no_list) == 1 else (row_no_list or None)
+        if row_no is None and months and month not in months:
+            # only force a default month when browsing by month; a row_no view is
+            # pinpointing specific rows and must not be narrowed by month as well
+            month = months[-1]
         rows, total = ts.get_records(
             import_id, sheet=sheet, month=month, sort=sort, sort_dir=sort_dir, row_no=row_no,
             offset=(page - 1) * per_page, limit=per_page,
