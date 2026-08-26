@@ -4,8 +4,9 @@
 <h1>相対表 {{ month }}</h1>
 <p class="lead">
   すべての取込を横断して、{{ month }} の販売分をまとめて表示しています。全 {{ total }} 件。<br>
-  仕入側（年月日・単価・数量・代価・相手方名・備考）が空欄の行は、商品の特徴が完全に一致する
-  古物台帳の購入記録があれば自動で埋められます。
+  仕入側（年月日・単価・数量・代価・相手方名・備考）が空欄の行（赤色）は、商品の特徴が完全に一致する
+  古物台帳の購入記録があれば自動で埋められます。それでも埋まらない行（未開封品から開封して
+  売った場合など）は、右の「仕入先を紐づける」から古物台帳を検索して手動で紐づけできます。
 </p>
 <form method="post" action="{{ url_for('comparison_fill_purchase') }}" style="margin-bottom:1.5rem;">
   <input type="hidden" name="month" value="{{ month }}">
@@ -63,6 +64,7 @@
         <th>ファイル名</th>
         <th>シート</th>
         <th>行</th>
+        <th></th>
         {% if rows and rows[0].headers %}
           {% for h in rows[0].headers %}<th>{{ h }}</th>{% endfor %}
         {% endif %}
@@ -70,11 +72,16 @@
     </thead>
     <tbody>
       {% for row in rows %}
-      <tr>
+      <tr class="{{ 'level-error' if row.cells and row.cells[0] in (None, '') else '' }}">
         <td>{{ row.import_id }}</td>
         <td>{{ row.source_name }}</td>
         <td>{{ row.sheet_name }}</td>
         <td>{{ row.row_no }}</td>
+        <td>
+          <a class="button small" href="{{ url_for('records_view', import_id=row.import_id, sheet=row.sheet_name, row_no=row.row_no) }}">
+            {{ "仕入先を紐づける" if row.cells and row.cells[0] in (None, '') else "この行を見る" }}
+          </a>
+        </td>
         {% for v in row.cells %}<td>{{ (v | num) if v is not none else "" }}</td>{% endfor %}
       </tr>
       {% endfor %}
