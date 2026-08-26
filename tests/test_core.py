@@ -1624,7 +1624,8 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
             [f"2026-01-{d:02d}", f"客{d}", "", "", "", "", "同じカード", "1", "1000", "1000", ""]
             for d in range(1, 32)
         ]
-        self.app.import_ledger(self.write_ledger(rows))
+        ledger_id = self.app.import_ledger(self.write_ledger(rows))
+        self.app.merge_ledger_imports([ledger_id])
 
         results, total = self.app.search_ledger("同じカード")
 
@@ -1632,11 +1633,12 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
         self.assertEqual(30, len(results))
 
     def test_search_ledger_orders_oldest_purchase_first(self):
-        self.app.import_ledger(self.write_ledger([
+        ledger_id = self.app.import_ledger(self.write_ledger([
             ["2026-03-01", "客A", "", "", "", "", "同じカード", "1", "1000", "1000", ""],
             ["2026-01-01", "客B", "", "", "", "", "同じカード", "1", "1000", "1000", ""],
             ["2026-02-01", "客C", "", "", "", "", "同じカード", "1", "1000", "1000", ""],
         ]))
+        self.app.merge_ledger_imports([ledger_id])
 
         results, total = self.app.search_ledger("同じカード")
 
@@ -1644,10 +1646,11 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
         self.assertEqual(["客B", "客C", "客A"], [r["name"] for r in results])
 
     def test_search_ledger_can_narrow_to_a_purchase_month(self):
-        self.app.import_ledger(self.write_ledger([
+        ledger_id = self.app.import_ledger(self.write_ledger([
             ["2026-01-01", "客A", "", "", "", "", "同じカード", "1", "1000", "1000", ""],
             ["2026-06-01", "客B", "", "", "", "", "同じカード", "1", "1000", "1000", ""],
         ]))
+        self.app.merge_ledger_imports([ledger_id])
 
         results, total = self.app.search_ledger("同じカード", month="2026-06")
 
@@ -1655,12 +1658,13 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
         self.assertEqual("客B", results[0]["name"])
 
     def test_search_ledger_month_summary_counts_matches_per_month(self):
-        self.app.import_ledger(self.write_ledger([
+        ledger_id = self.app.import_ledger(self.write_ledger([
             ["2026-01-01", "客A", "", "", "", "", "同じカード", "1", "1000", "1000", ""],
             ["2026-01-15", "客B", "", "", "", "", "同じカード", "1", "1000", "1000", ""],
             ["2026-06-01", "客C", "", "", "", "", "同じカード", "1", "1000", "1000", ""],
             ["2026-01-01", "客D", "", "", "", "", "別のカード", "1", "1000", "1000", ""],
         ]))
+        self.app.merge_ledger_imports([ledger_id])
 
         summary = self.app.search_ledger_month_summary("同じカード")
 
@@ -1673,12 +1677,13 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
             ["2026-05-01", "箱売り太郎", "はこうりたろう", "1990-01-01", "住所", "000",
              "未開封BOX ワンピースカード OP-01", "1", "50000", "50000", ""],
         ]))
+        self.app.merge_ledger_imports([ledger_id])
         comparison_id = self.app.import_comparison(self.write_comparison_xlsx([
             ("モンキー・D・ルフィ 【SR】【パラレル】", "2026-06-03", 3000, "海外客1"),
             ("ナミ 【SR】【パラレル】", "2026-06-04", 2000, "海外客2"),
         ]))
-        records, _ = self.app.get_records(ledger_id)
-        ledger_record_id = records[0]["id"]
+        results, _ = self.app.search_ledger("未開封BOX")
+        ledger_record_id = results[0]["id"]
 
         self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 3, ledger_record_id, qty=1, amount=500)
         # still findable/usable for a second row from the same box

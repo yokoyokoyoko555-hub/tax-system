@@ -1169,21 +1169,28 @@ class TaxSystem:
         """search_ledgerとsearch_ledger_month_summaryが共有する、商品名・氏名一致の
         古物台帳（相対表で使用済み=matched/manualを除く）を全件返す内部ヘルパー。
         件数の上限や月の絞り込みはここでは行わない。
+        結合済みの最新の古物台帳（latest_merged_ledger_import、fill_comparison_purchase_from_ledger
+        と同じ基準）だけを検索対象にする。取込済みの生データ（結合前）や、過去の結合世代
+        （結合し直すたびに前回までの内容を丸ごと含む新しい取込として残る）まで含めて検索すると、
+        同じ仕入が結合世代の数だけ重複して出てきてしまうため。
         古物台帳の件数が多い（数十万件規模）と、全件をPythonに読み込んでから照合すると
         数秒かかるため、絞り込みはSQLite側のjson_extract+LIKEで行う（該当行だけを取得する）。
         """
         query = query.strip()
         if not query:
             return []
+        merged = self.latest_merged_ledger_import()
+        if not merged:
+            return []
         like_pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         with closing(self.connect()) as db, db:
             rows = db.execute(
-                "SELECT r.id, r.data_json FROM records r JOIN imports i ON r.import_id=i.id "
-                "WHERE i.kind='ledger' AND ("
+                "SELECT r.id, r.data_json FROM records r "
+                "WHERE r.import_id=? AND ("
                 "  json_extract(r.data_json,'$.商品名') LIKE ? ESCAPE '\\' "
                 "  OR json_extract(r.data_json,'$.名前') LIKE ? ESCAPE '\\'"
                 ") ORDER BY r.id",
-                (like_pattern, like_pattern),
+                (merged["id"], like_pattern, like_pattern),
             ).fetchall()
             consumed = {
                 row["ledger_record_id"]
