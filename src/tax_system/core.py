@@ -1165,17 +1165,14 @@ class TaxSystem:
             )
         return results
 
-    def search_ledger(self, query: str, month: str | None = None,
-                      limit: int = 30) -> tuple[list[dict[str, Any]], int]:
-        """商品名・氏名で古物台帳を横断検索する。月（例:"2026-06"）を指定すると、
-        その仕入年月の行だけに絞り込む。一致件数がlimitを超える場合は、仕入日が古い順
-        （先入れ先出し。fill_comparison_purchase_from_ledgerの自動一致と同じ考え方）に
-        limit件だけ返す。全体の一致件数は2番目の戻り値でそのまま返すため、呼び出し側は
-        「全N件中M件を表示」のように絞り込み漏れがないことを示せる。
+    def _search_ledger_matches(self, query: str) -> list[dict[str, Any]]:
+        """search_ledgerとsearch_ledger_month_summaryが共有する、商品名・氏名一致の
+        古物台帳（相対表で使用済み=matched/manualを除く）を全件返す内部ヘルパー。
+        件数の上限や月の絞り込みはここでは行わない。
         """
         query = query.strip()
         if not query:
-            return [], 0
+            return []
         with closing(self.connect()) as db, db:
             rows = db.execute(
                 "SELECT r.id, r.data_json FROM records r JOIN imports i ON r.import_id=i.id WHERE i.kind='ledger' ORDER BY r.id"
@@ -1194,20 +1191,42 @@ class TaxSystem:
             haystack = f"{data.get('商品名', '')} {data.get('名前', '')}"
             if query not in haystack:
                 continue
-            purchase_date = _to_date(data.get("日時"))
-            if month is not None:
-                row_month = f"{purchase_date.year:04d}-{purchase_date.month:02d}" if purchase_date else None
-                if row_month != month:
-                    continue
             matches.append({
                 "id": row["id"], "name": data.get("名前"), "product": data.get("商品名"),
                 "qty": data.get("個数"), "date": data.get("日時"), "amount": data.get("金額"),
-                "_sort_date": purchase_date,
+                "purchase_date": _to_date(data.get("日時")),
             })
-        matches.sort(key=lambda m: m["_sort_date"] or date.max)
-        for m in matches:
-            del m["_sort_date"]
-        return matches[:limit], len(matches)
+        return matches
+
+    def search_ledger(self, query: str, month: str | None = None,
+                      limit: int = 30) -> tuple[list[dict[str, Any]], int]:
+        """商品名・氏名で古物台帳を横断検索する。月（例:"2026-06"）を指定すると、
+        その仕入年月の行だけに絞り込む。一致件数がlimitを超える場合は、仕入日が古い順
+        （先入れ先出し。fill_comparison_purchase_from_ledgerの自動一致と同じ考え方）に
+        limit件だけ返す。全体の一致件数は2番目の戻り値でそのまま返すため、呼び出し側は
+        「全N件中M件を表示」のように絞り込み漏れがないことを示せる。
+        """
+        matches = self._search_ledger_matches(query)
+        if month is not None:
+            matches = [
+                m for m in matches
+                if m["purchase_date"] and f"{m['purchase_date'].year:04d}-{m['purchase_date'].month:02d}" == month
+            ]
+        matches.sort(key=lambda m: m["purchase_date"] or date.max)
+        results = [{k: v for k, v in m.items() if k != "purchase_date"} for m in matches[:limit]]
+        return results, len(matches)
+
+    def search_ledger_month_summary(self, query: str) -> list[dict[str, Any]]:
+        """search_ledgerと同じ条件に一致する古物台帳を、仕入年月ごとの件数に集計する。
+        一致件数が多すぎて一覧に出しきれない時、どの月に絞り込むか選ぶための一覧に使う。
+        """
+        counts: dict[str, int] = {}
+        for m in self._search_ledger_matches(query):
+            if not m["purchase_date"]:
+                continue
+            key = f"{m['purchase_date'].year:04d}-{m['purchase_date'].month:02d}"
+            counts[key] = counts.get(key, 0) + 1
+        return [{"month": key, "count": counts[key]} for key in sorted(counts)]
 
     def set_manual_allocation(self, comparison_import_id: int, sheet: str, row_no: int,
                               ledger_record_id: int | None) -> None:

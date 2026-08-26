@@ -1654,6 +1654,18 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
         self.assertEqual(1, total)
         self.assertEqual("客B", results[0]["name"])
 
+    def test_search_ledger_month_summary_counts_matches_per_month(self):
+        self.app.import_ledger(self.write_ledger([
+            ["2026-01-01", "客A", "", "", "", "", "同じカード", "1", "1000", "1000", ""],
+            ["2026-01-15", "客B", "", "", "", "", "同じカード", "1", "1000", "1000", ""],
+            ["2026-06-01", "客C", "", "", "", "", "同じカード", "1", "1000", "1000", ""],
+            ["2026-01-01", "客D", "", "", "", "", "別のカード", "1", "1000", "1000", ""],
+        ]))
+
+        summary = self.app.search_ledger_month_summary("同じカード")
+
+        self.assertEqual([{"month": "2026-01", "count": 2}, {"month": "2026-06", "count": 1}], summary)
+
     def test_ledger_record_stays_available_for_reuse_on_another_row(self):
         # one unopened box can be prorated across many individually-sold cards, so linking
         # it once must not mark it "consumed" the way fill_comparison_purchase_from_ledger does.
