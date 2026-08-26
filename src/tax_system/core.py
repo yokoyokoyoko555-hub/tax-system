@@ -1169,13 +1169,21 @@ class TaxSystem:
         """search_ledgerとsearch_ledger_month_summaryが共有する、商品名・氏名一致の
         古物台帳（相対表で使用済み=matched/manualを除く）を全件返す内部ヘルパー。
         件数の上限や月の絞り込みはここでは行わない。
+        古物台帳の件数が多い（数十万件規模）と、全件をPythonに読み込んでから照合すると
+        数秒かかるため、絞り込みはSQLite側のjson_extract+LIKEで行う（該当行だけを取得する）。
         """
         query = query.strip()
         if not query:
             return []
+        like_pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         with closing(self.connect()) as db, db:
             rows = db.execute(
-                "SELECT r.id, r.data_json FROM records r JOIN imports i ON r.import_id=i.id WHERE i.kind='ledger' ORDER BY r.id"
+                "SELECT r.id, r.data_json FROM records r JOIN imports i ON r.import_id=i.id "
+                "WHERE i.kind='ledger' AND ("
+                "  json_extract(r.data_json,'$.商品名') LIKE ? ESCAPE '\\' "
+                "  OR json_extract(r.data_json,'$.名前') LIKE ? ESCAPE '\\'"
+                ") ORDER BY r.id",
+                (like_pattern, like_pattern),
             ).fetchall()
             consumed = {
                 row["ledger_record_id"]
@@ -1188,9 +1196,6 @@ class TaxSystem:
             if row["id"] in consumed:
                 continue
             data = json.loads(row["data_json"])
-            haystack = f"{data.get('商品名', '')} {data.get('名前', '')}"
-            if query not in haystack:
-                continue
             matches.append({
                 "id": row["id"], "name": data.get("名前"), "product": data.get("商品名"),
                 "qty": data.get("個数"), "date": data.get("日時"), "amount": data.get("金額"),
