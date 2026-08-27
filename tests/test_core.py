@@ -1645,6 +1645,18 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
         self.assertEqual(3, total)
         self.assertEqual(["客B", "客C", "客A"], [r["name"] for r in results])
 
+    def test_search_ledger_matches_note_field_too(self):
+        ledger_id = self.app.import_ledger(self.write_ledger([
+            ["2026-01-01", "客A", "", "", "", "", "特定カード", "1", "1000", "1000", "福袋より案分"],
+            ["2026-01-01", "客B", "", "", "", "", "別のカード", "1", "1000", "1000", ""],
+        ]))
+        self.app.merge_ledger_imports([ledger_id])
+
+        results, total = self.app.search_ledger("福袋")
+
+        self.assertEqual(1, total)
+        self.assertEqual("客A", results[0]["name"])
+
     def test_search_ledger_can_narrow_to_a_purchase_month(self):
         ledger_id = self.app.import_ledger(self.write_ledger([
             ["2026-01-01", "客A", "", "", "", "", "同じカード", "1", "1000", "1000", ""],

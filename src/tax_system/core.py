@@ -1166,8 +1166,8 @@ class TaxSystem:
         return results
 
     def _search_ledger_matches(self, query: str) -> list[dict[str, Any]]:
-        """search_ledgerとsearch_ledger_month_summaryが共有する、商品名・氏名一致の
-        古物台帳（相対表で使用済み=matched/manualを除く）を全件返す内部ヘルパー。
+        """search_ledgerとsearch_ledger_month_summaryが共有する、商品名・氏名・備考いずれかが
+        一致する古物台帳（相対表で使用済み=matched/manualを除く）を全件返す内部ヘルパー。
         件数の上限や月の絞り込みはここでは行わない。
         結合済みの最新の古物台帳（latest_merged_ledger_import、fill_comparison_purchase_from_ledger
         と同じ基準）だけを検索対象にする。取込済みの生データ（結合前）や、過去の結合世代
@@ -1188,9 +1188,10 @@ class TaxSystem:
                 "SELECT r.id, r.data_json FROM records r "
                 "WHERE r.import_id=? AND ("
                 "  json_extract(r.data_json,'$.商品名') LIKE ? ESCAPE '\\' "
-                "  OR json_extract(r.data_json,'$.名前') LIKE ? ESCAPE '\\'"
+                "  OR json_extract(r.data_json,'$.名前') LIKE ? ESCAPE '\\' "
+                "  OR json_extract(r.data_json,'$.備考') LIKE ? ESCAPE '\\'"
                 ") ORDER BY r.id",
-                (merged["id"], like_pattern, like_pattern),
+                (merged["id"], like_pattern, like_pattern, like_pattern),
             ).fetchall()
             consumed = {
                 row["ledger_record_id"]
