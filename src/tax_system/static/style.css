@@ -123,6 +123,14 @@ th { color: var(--muted); font-weight: 600; }
 
 tr.level-error td { background: var(--error-bg); color: var(--error-text); }
 
+summary.level-error {
+  background: var(--error-bg);
+  color: var(--error-text);
+  padding: 0.4rem 0.6rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
 .error-title { color: var(--error-text); }
 
 .success-box { background: var(--success-bg); color: var(--success-text); border-color: #bbf7d0; }

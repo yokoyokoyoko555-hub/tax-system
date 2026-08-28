@@ -121,7 +121,7 @@
     </p>
     {% for group in purchase_reuse %}
     <details style="margin-bottom:0.5rem;">
-      <summary style="cursor:pointer;">
+      <summary class="level-error">
         仕入先: {{ group.vendor }} ｜ 仕入年月日: {{ group.date }} ｜ 商品: {{ group.product }}
         （{{ group.occurrences|length }}件）
         {% for link in group.view_links %}
