@@ -120,39 +120,42 @@
       問題なければ削除する必要はありません。
     </p>
     {% for group in purchase_reuse %}
-    <table style="margin-bottom:1rem;">
-      <caption class="muted" style="text-align:left; caption-side:top;">
+    <details style="margin-bottom:0.5rem;">
+      <summary style="cursor:pointer;">
         仕入先: {{ group.vendor }} ｜ 仕入年月日: {{ group.date }} ｜ 商品: {{ group.product }}
+        （{{ group.occurrences|length }}件）
         {% for link in group.view_links %}
           {% if link.row_nos|length > 1 %}
           ｜ <a href="{{ url_for('records_view', import_id=link.import_id, sheet=link.sheet, row_no=link.row_nos) }}">この{{ link.row_nos|length }}行をまとめて見る</a>
           {% endif %}
         {% endfor %}
-      </caption>
-      <thead><tr><th>取込ID</th><th>ファイル名</th><th>シート</th><th>行</th><th>販売日</th><th>販売先</th><th>販売額</th><th></th></tr></thead>
-      <tbody>
-        {% for occ in group.occurrences %}
-        <tr class="level-error">
-          <td>{{ occ.import_id }}</td>
-          <td>{{ occ.source_name }}</td>
-          <td>{{ occ.sheet }}</td>
-          <td>{{ occ.row_no }}</td>
-          <td>{{ occ.sale_date }}</td>
-          <td>{{ occ.sale_buyer }}</td>
-          <td>{{ occ.sale_amount | num if occ.sale_amount is not none else "" }}</td>
-          <td>
-            <a class="button small" href="{{ url_for('records_view', import_id=occ.import_id, sheet=occ.sheet, row_no=occ.row_no) }}">中身を見る</a>
-            <form method="post" action="{{ url_for('comparison_duplicate_delete') }}" style="display:inline;">
-              <input type="hidden" name="import_id" value="{{ occ.import_id }}">
-              <input type="hidden" name="sheet" value="{{ occ.sheet }}">
-              <input type="hidden" name="row_no" value="{{ occ.row_no }}">
-              <button type="submit" class="button small">この行を削除</button>
-            </form>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+      </summary>
+      <table>
+        <thead><tr><th>取込ID</th><th>ファイル名</th><th>シート</th><th>行</th><th>販売日</th><th>販売先</th><th>販売額</th><th></th></tr></thead>
+        <tbody>
+          {% for occ in group.occurrences %}
+          <tr class="level-error">
+            <td>{{ occ.import_id }}</td>
+            <td>{{ occ.source_name }}</td>
+            <td>{{ occ.sheet }}</td>
+            <td>{{ occ.row_no }}</td>
+            <td>{{ occ.sale_date }}</td>
+            <td>{{ occ.sale_buyer }}</td>
+            <td>{{ occ.sale_amount | num if occ.sale_amount is not none else "" }}</td>
+            <td>
+              <a class="button small" href="{{ url_for('records_view', import_id=occ.import_id, sheet=occ.sheet, row_no=occ.row_no) }}">中身を見る</a>
+              <form method="post" action="{{ url_for('comparison_duplicate_delete') }}" style="display:inline;">
+                <input type="hidden" name="import_id" value="{{ occ.import_id }}">
+                <input type="hidden" name="sheet" value="{{ occ.sheet }}">
+                <input type="hidden" name="row_no" value="{{ occ.row_no }}">
+                <button type="submit" class="button small">この行を削除</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
     {% endfor %}
   </section>
   {% endif %}
