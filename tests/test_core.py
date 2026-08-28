@@ -218,7 +218,20 @@ class AllocationTests(unittest.TestCase):
         )
         self.assertEqual([], self.app.validate(comparison_id))
 
-    def test_missing_purchase_blocks_export(self):
+    def register_template(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "輸出販売"
+        headers = self.PURCHASE_HEADERS + self.SALE_HEADERS
+        for col, value in enumerate(headers, 1):
+            ws.cell(2, col).value = value
+        path = self.root / "template.xlsx"
+        wb.save(path)
+        return self.app.register_template("comparison", path, "test", "v1", "2026-01-01")
+
+    def test_comparison_export_is_not_blocked_by_validation_errors(self):
+        # 相対表は古物台帳・期末在庫表と違い、検証エラーが残っていても利用者の判断で
+        # 正式出力できる（ユーザー要望により意図的にブロックしない）。
         ledger_row = dict(zip(LEDGER_COLUMNS, [
             "2026-05-01", "山田太郎", "やまだたろう", "1990-01-01", "匿名住所", "000",
             "テストカード", "2", "10000", "20000", "",
@@ -229,6 +242,16 @@ class AllocationTests(unittest.TestCase):
         )
         checks = self.app.validate(comparison_id)
         self.assertTrue(any(c.code == "ALLOCATION_NOT_FOUND" for c in checks))
+        template_id = self.register_template()
+
+        output = self.app.export(comparison_id, self.root / "formal.xlsx", template_id=template_id)
+
+        self.assertTrue(output.exists())
+
+    def test_comparison_export_still_requires_a_template(self):
+        comparison_id = self.app.import_comparison(
+            self.write_comparison(["2026-05-01", "テストカード", 2, "山田太郎", 20000], ["2026-06-01", 2])
+        )
         with self.assertRaises(ValueError):
             self.app.export(comparison_id, self.root / "blocked.xlsx", template_id=None)
 

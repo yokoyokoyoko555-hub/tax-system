@@ -28,7 +28,7 @@
       {% endfor %}
     </tbody>
   </table>
-  <p class="muted">エラーが1件でもある場合、正式出力はできません。確認用出力は可能です。「古物台帳から仕入側を埋める」で解消できるものもあります。</p>
+  <p class="muted">エラーが残っていても、下の出力欄でチェックを外せば正式出力できます。「古物台帳から仕入側を埋める」で解消できるものもあります。</p>
 </section>
 {% endif %}
 
@@ -44,12 +44,11 @@
       </select>
     </label>
     <label class="checkbox">
-      <input type="checkbox" name="preview" {% if has_errors %}checked disabled{% endif %}>
+      <input type="checkbox" name="preview" {% if has_errors %}checked{% endif %}>
       確認用として出力する（正式帳票ではない透かし入り）
     </label>
-    {% if has_errors %}<input type="hidden" name="preview" value="on">{% endif %}
     <button type="submit" class="button small">出力する</button>
-    {% if has_errors %}<p class="muted">エラーがあるため、正式出力は選べません（確認用のみ）。</p>{% endif %}
+    {% if has_errors %}<p class="muted">エラーが残っていますが、チェックを外せば正式出力もできます。内容をよく確認してください。</p>{% endif %}
   </form>
   {% else %}
   <p class="muted">相対表のテンプレートが未登録です。先に<a href="{{ url_for('new_template') }}">テンプレート登録</a>してください。</p>

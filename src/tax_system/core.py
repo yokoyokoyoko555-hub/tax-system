@@ -2106,8 +2106,8 @@ class TaxSystem:
             by_import.setdefault(row["import_id"], []).append(row)
 
         checks = self.validate_comparison_month(month)
-        if any(c.level == "error" for c in checks) and not preview:
-            raise ValueError("検証エラーがあるため正式出力できません。確認用出力をお試しください")
+        # 相対表は、エラーが残っていても利用者の判断で正式出力できるようにする
+        # （古物台帳・期末在庫表と異なり export() 側でも同様にブロックしない）
 
         output = Path(output).resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -2148,7 +2148,9 @@ class TaxSystem:
         else:
             checks = self._validate_ledger(records) if imp["kind"] == "ledger" else self.validate(import_id)
 
-        if any(c.level == "error" for c in checks) and not preview:
+        # 相対表は利用者の判断でエラーが残っていても正式出力できる。古物台帳・期末在庫表は
+        # これまで通り、エラーがあれば確認用出力のみに制限する。
+        if imp["kind"] != "comparison" and any(c.level == "error" for c in checks) and not preview:
             raise ValueError("検証エラーがあるため正式出力できません。--preview を指定すると確認用出力が可能です")
         output = Path(output).resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
