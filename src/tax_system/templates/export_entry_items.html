@@ -38,6 +38,35 @@
   {% endif %}
 </section>
 
+{% if draft['items'] %}
+<section class="card">
+  <h2>輸出インボイス用（コピー）</h2>
+  <p class="lead">
+    英語名・数量・単価・小計をタブ区切りで並べています。下のボタンでコピーするか、
+    枠内をクリックすると全選択されるのでそのままコピーしてください。Excelや輸出インボイスに
+    そのまま貼り付けられます。
+  </p>
+  <textarea id="invoice-copy-text" readonly rows="{{ draft['items']|length + 2 }}"
+            style="width:100%; font-family:monospace;" onclick="this.select()">Description	Qty	Unit Price	Amount
+{%- for item in draft['items'] %}
+{{ item.eng }}	{{ item.qty | num }}	{{ item.price | num }}	{{ item.subtotal | num }}
+{%- endfor %}</textarea>
+  <button type="button" class="button small" onclick="copyInvoiceText()">コピーする</button>
+  <span id="invoice-copy-status" class="muted"></span>
+</section>
+<script>
+function copyInvoiceText() {
+  var text = document.getElementById('invoice-copy-text').value;
+  var status = document.getElementById('invoice-copy-status');
+  navigator.clipboard.writeText(text).then(function () {
+    status.textContent = 'コピーしました';
+  }, function () {
+    status.textContent = 'コピーに失敗しました。枠内をクリックして手動でコピーしてください';
+  });
+}
+</script>
+{% endif %}
+
 <section class="card">
   <h2>商品を追加</h2>
   <form method="post" action="{{ url_for('export_entry_add_item') }}">
