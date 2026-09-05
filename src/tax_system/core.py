@@ -21,6 +21,10 @@ LEDGER_COLUMNS = ["日時", "名前", "ふりがな", "生年月日", "住所", 
 INVENTORY_COLUMNS = ["商品名", "仕入れ原価", "在庫数"]
 INVENTORY_DISPLAY_COLUMNS = ["商品名", "カテゴリ", "サブカテゴリ", "グループ", "仕入れ原価", "販売価格", "在庫数"]
 EXPORT_DATA_COLUMNS = ["年月日", "品名", "金額", "数量", "小計", "相手方名", "支払方法", "通貨"]
+# 輸出入力（手入力）は英語名も保存するが、ファイル取込（import_export_data）のCSV列検証は
+# EXPORT_DATA_COLUMNS のまま変えない（既存の輸出データCSVに英語名列がなくても取り込めるように）。
+# 表示用にだけ英語名を追加する。
+EXPORT_DATA_DISPLAY_COLUMNS = EXPORT_DATA_COLUMNS + ["英語名"]
 LEDGER_POS_COLUMNS = ["履歴ID", "状態", "日時", "ユーザーID", "氏名", "カード番号", "カード名", "数量", "単価", "金額", "カード備考", "全体備考"]
 LEDGER_IDENTITY_COLUMNS = ["日時", "名前", "名前ふりがな", "生年月日", "住所", "電話番号", "金額"]
 

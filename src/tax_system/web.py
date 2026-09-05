@@ -9,10 +9,16 @@ from pathlib import Path
 from flask import Flask, abort, flash, redirect, render_template, request, send_file, session, url_for
 from werkzeug.utils import secure_filename
 
-from .core import EXPORT_DATA_COLUMNS, INVENTORY_DISPLAY_COLUMNS, LEDGER_COLUMNS, TaxSystem, translate_ja_to_en
+from .core import (
+    EXPORT_DATA_DISPLAY_COLUMNS,
+    INVENTORY_DISPLAY_COLUMNS,
+    LEDGER_COLUMNS,
+    TaxSystem,
+    translate_ja_to_en,
+)
 
 KIND_LABELS = {"ledger": "古物台帳", "comparison": "相対表", "inventory": "期末在庫表", "export_data": "輸出データ"}
-FLAT_COLUMNS = {"ledger": LEDGER_COLUMNS, "inventory": INVENTORY_DISPLAY_COLUMNS, "export_data": EXPORT_DATA_COLUMNS}
+FLAT_COLUMNS = {"ledger": LEDGER_COLUMNS, "inventory": INVENTORY_DISPLAY_COLUMNS, "export_data": EXPORT_DATA_DISPLAY_COLUMNS}
 
 OUTPUT_DIR = Path("outputs").resolve()
 
