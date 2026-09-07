@@ -293,6 +293,18 @@ class LedgerCompletionTests(unittest.TestCase):
     def import_inventory_for(self, month):
         self.app.import_inventory(self.write_inventory(), as_of=month)
 
+    def write_inventory_products(self, rows):
+        # rows: list of dicts with 商品名/在庫数/仕入/販売価格 - the richer EC商品CSV format
+        # (import_inventory_products), which is the only one that captures 販売価格.
+        path = self.root / "products.csv"
+        fieldnames = ["商品名", "在庫数", "仕入", "販売価格"]
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames, lineterminator="\r\n")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
+        return path
+
     def write_ledger_lump(self, total):
         path = self.root / "ledger.csv"
         row = dict(zip(LEDGER_COLUMNS, [
@@ -449,8 +461,48 @@ class LedgerCompletionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.app.add_ledger_item(ledger_id, row_no, "テストカードA", 1)
 
+    def test_add_ledger_item_accepts_a_custom_unit_cost_within_the_sell_price_range(self):
+        # 相場ものは買取額が毎回変わるため、AIの提案などで販売価格の50-90%の範囲内の
+        # 独自の単価を明示的に指定できる（仕入れ原価をそのまま使うとは限らない）。
+        self.app.import_inventory_products(
+            self.write_inventory_products([
+                {"商品名": "テストカードA", "在庫数": "10", "仕入": "5000", "販売価格": "10000"},
+            ]),
+            as_of="2026-05",
+        )
+        ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))
+        row_no = self.app.propose_ledger_breakdown(ledger_id)[0]["row_no"]
+
+        self.app.add_ledger_item(ledger_id, row_no, "テストカードA", 1, unit_cost=8000)
+
+        breakdown = self.app.propose_ledger_breakdown(ledger_id)
+        manual = breakdown[0]["manual_items"][0]
+        self.assertEqual(8000, manual["unit_cost"])
+        self.assertEqual(8000, manual["amount"])
+
+    def test_add_ledger_item_rejects_a_unit_cost_outside_the_sell_price_range(self):
+        self.app.import_inventory_products(
+            self.write_inventory_products([
+                {"商品名": "テストカードA", "在庫数": "10", "仕入": "5000", "販売価格": "10000"},
+            ]),
+            as_of="2026-05",
+        )
+        ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))
+        row_no = self.app.propose_ledger_breakdown(ledger_id)[0]["row_no"]
+
+        with self.assertRaises(ValueError):
+            # 10000円の商品を2000円（20%）で買い取るのは想定レンジ（50-90%）から外れている
+            self.app.add_ledger_item(ledger_id, row_no, "テストカードA", 1, unit_cost=2000)
+
     def test_suggest_ledger_completion_never_invents_products(self):
-        self.import_inventory_for("2026-05")
+        # AI suggestions are priced off 販売価格 (50-90% range), which only the EC商品CSV
+        # import format (import_inventory_products) captures.
+        self.app.import_inventory_products(
+            self.write_inventory_products([
+                {"商品名": "テストカードA", "在庫数": "10", "仕入": "5000", "販売価格": "10000"},
+            ]),
+            as_of="2026-05",
+        )
         ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))
         with patch("openai.OpenAI") as mock_openai_cls:
             mock_client = MagicMock()
@@ -458,15 +510,15 @@ class LedgerCompletionTests(unittest.TestCase):
             mock_response = MagicMock()
             mock_response.choices[0].message.content = json.dumps({
                 "items": [
-                    {"product": "テストカードA", "qty": 1},
-                    {"product": "存在しないカード", "qty": 1},
+                    {"product": "テストカードA", "qty": 1, "unit_price": 7000},
+                    {"product": "存在しないカード", "qty": 1, "unit_price": 5000},
                 ]
             })
             mock_client.chat.completions.create.return_value = mock_response
             with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
                 row_no = self.app.propose_ledger_breakdown(ledger_id)[0]["row_no"]
                 items = self.app.suggest_ledger_completion(ledger_id, row_no)
-        self.assertEqual([{"product": "テストカードA", "qty": 1, "unit_cost": 5000, "amount": 5000}], items)
+        self.assertEqual([{"product": "テストカードA", "qty": 1, "unit_cost": 7000, "amount": 7000}], items)
 
 
 class BuildComparisonTests(unittest.TestCase):
@@ -1043,6 +1095,9 @@ class MergeLedgerTests(unittest.TestCase):
 
 
 class SuggestLedgerItemsTests(unittest.TestCase):
+    # the dict passed in is now 商品名->販売価格 (not 仕入れ原価): trading cards are a
+    # market-priced good where the actual buy price varies each time (roughly 50-90% of
+    # 販売価格), so the AI is given a price RANGE per product and picks a unit_price within it.
     def test_returns_none_without_api_key(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertIsNone(suggest_ledger_items(1000, {"A": 500}))
@@ -1052,21 +1107,36 @@ class SuggestLedgerItemsTests(unittest.TestCase):
             self.assertIsNone(suggest_ledger_items(1000, {}))
 
     @patch("openai.OpenAI")
-    def test_filters_items_not_in_inventory_and_invalid_qty(self, mock_openai_cls):
+    def test_filters_items_not_in_price_list_invalid_qty_and_out_of_range_price(self, mock_openai_cls):
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
         mock_response = MagicMock()
         mock_response.choices[0].message.content = json.dumps({
             "items": [
-                {"product": "A", "qty": 2},
-                {"product": "不明な商品", "qty": 1},
-                {"product": "B", "qty": -1},
+                {"product": "A", "qty": 2, "unit_price": 300},   # A: sell 500 -> range 250-450, ok
+                {"product": "不明な商品", "qty": 1, "unit_price": 200},  # not in the price list
+                {"product": "B", "qty": -1, "unit_price": 200},  # invalid qty
+                {"product": "C", "qty": 1, "unit_price": 999},   # C: sell 1000 -> range 500-900, too high
             ]
         })
         mock_client.chat.completions.create.return_value = mock_response
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
-            result = suggest_ledger_items(1000, {"A": 500, "B": 300})
-        self.assertEqual([{"product": "A", "qty": 2, "unit_cost": 500, "amount": 1000}], result)
+            result = suggest_ledger_items(1000, {"A": 500, "B": 300, "C": 1000})
+        self.assertEqual([{"product": "A", "qty": 2, "unit_cost": 300, "amount": 600}], result)
+
+    @patch("openai.OpenAI")
+    def test_clamps_price_slightly_outside_the_allowed_range(self, mock_openai_cls):
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = json.dumps({
+            # A: sell 500 -> range is exactly 250-450; 450.3 is just over due to rounding
+            "items": [{"product": "A", "qty": 1, "unit_price": 450.3}],
+        })
+        mock_client.chat.completions.create.return_value = mock_response
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+            result = suggest_ledger_items(1000, {"A": 500})
+        self.assertEqual([{"product": "A", "qty": 1, "unit_cost": 450, "amount": 450}], result)
 
 
 class ToDateTests(unittest.TestCase):

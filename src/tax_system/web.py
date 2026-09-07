@@ -396,8 +396,10 @@ def create_app(home: str | Path | None = None) -> Flask:
         month = request.form.get("month") or None
         product = request.form.get("product", "").strip()
         qty = request.form.get("qty", "").strip()
+        unit_cost = request.form.get("unit_cost", "").strip()
         try:
-            ts.add_ledger_item(import_id, row_no, product, float(qty))
+            ts.add_ledger_item(import_id, row_no, product, float(qty),
+                               unit_cost=float(unit_cost) if unit_cost else None)
         except (ValueError, TypeError) as exc:
             flash(f"追加に失敗しました: {exc}", "error")
         return redirect(url_for("ledger_completion_view", import_id=import_id, month=month))

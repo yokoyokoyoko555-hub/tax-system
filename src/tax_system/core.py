@@ -58,19 +58,26 @@ def translate_ja_to_en(text: str) -> str | None:
         return None
 
 
-def suggest_ledger_items(remainder: float, inventory: dict[str, float]) -> list[dict[str, Any]] | None:
-    """内訳復元の残額と期末在庫表の商品リストから、残額に合う商品の組み合わせをAIに提案してもらう。
-    提案はあくまで参考で、実際に追加するかどうかは呼び出し側（人）が選ぶ。
+def suggest_ledger_items(remainder: float, sell_prices: dict[str, float]) -> list[dict[str, Any]] | None:
+    """内訳復元の残額と期末在庫表の販売価格から、残額に合う商品の組み合わせをAIに提案してもらう。
+    トレーディングカードなどの相場ものは、同じ商品でも買取額が毎回変わる（だいたい販売価格の
+    50〜90%程度）ため、仕入れ原価のような固定値ではなく、各商品の「販売価格の50〜90%」という
+    買取額の目安レンジをAIに渡し、そのレンジ内で単価を自由に選んでもらうことで、残額にぴったり
+    合う組み合わせを見つけやすくする。提案はあくまで参考で、実際に追加するかどうかは呼び出し側
+    （人）が選ぶ。
     OPENAI_API_KEY未設定・在庫が空・API呼び出し失敗時はNoneを返す（呼び出し側は手動検索に切り替える）。
     """
     api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key or not inventory:
+    if not api_key or not sell_prices:
         return None
     try:
         from openai import OpenAI
 
         client = OpenAI(api_key=api_key)
-        catalog = "\n".join(f"- {name}: 仕入れ原価 {cost}円" for name, cost in inventory.items())
+        catalog = "\n".join(
+            f"- {name}: 買取額の目安 {price * 0.5:.0f}円〜{price * 0.9:.0f}円"
+            for name, price in sell_prices.items()
+        )
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             temperature=0,
@@ -78,10 +85,13 @@ def suggest_ledger_items(remainder: float, inventory: dict[str, float]) -> list[
             messages=[
                 {"role": "system", "content": (
                     "あなたは古物台帳の内訳復元を手伝うアシスタントです。指定された商品リストの中から、"
-                    "合計金額ができるだけ指定の残額に一致する組み合わせを選んでください。"
-                    'JSON形式 {"items": [{"product": "商品名", "qty": 数量}, ...]} のみで回答してください。'
-                    "リストにない商品名は使わないでください。ぴったり一致する組み合わせがなければ、"
-                    "最も近いものを1つ提案してください。"
+                    "合計金額ができるだけ指定の残額に一致する組み合わせを選んでください。各商品には"
+                    "買取額の目安（レンジ）が示されています。実際の買取額は毎回変動するため、単価は"
+                    "そのレンジの範囲内であれば自由に調整して構いません。"
+                    'JSON形式 {"items": [{"product": "商品名", "qty": 数量, "unit_price": 単価}, ...]} '
+                    "のみで回答してください。リストにない商品名は使わないでください。単価は必ず指定された"
+                    "レンジ内にしてください。ぴったり一致する組み合わせがなければ、最も近いものを提案して"
+                    "ください。"
                 )},
                 {"role": "user", "content": f"残額: {remainder}円\n商品リスト:\n{catalog}"},
             ],
@@ -92,11 +102,20 @@ def suggest_ledger_items(remainder: float, inventory: dict[str, float]) -> list[
             return None
         result = []
         for item in items:
-            product = item.get("product") if isinstance(item, dict) else None
-            qty = item.get("qty") if isinstance(item, dict) else None
-            if product in inventory and isinstance(qty, (int, float)) and qty > 0:
-                cost = inventory[product]
-                result.append({"product": product, "qty": qty, "unit_cost": cost, "amount": cost * qty})
+            if not isinstance(item, dict):
+                continue
+            product = item.get("product")
+            qty = item.get("qty")
+            unit_price = item.get("unit_price")
+            if product not in sell_prices or not isinstance(qty, (int, float)) or qty <= 0:
+                continue
+            if not isinstance(unit_price, (int, float)):
+                continue
+            low, high = sell_prices[product] * 0.5, sell_prices[product] * 0.9
+            if unit_price < low - 0.5 or unit_price > high + 0.5:
+                continue
+            unit_price = min(max(unit_price, low), high)
+            result.append({"product": product, "qty": qty, "unit_cost": unit_price, "amount": unit_price * qty})
         return result or None
     except Exception:
         return None
@@ -1333,31 +1352,48 @@ class TaxSystem:
                  f"未開封品から案分（数量{qty}・金額{amount}円）", now),
             )
 
-    def _inventory_for_month(self, month: str | None) -> dict[str, float]:
-        """指定した基準年月（例: "2026-04"）と一致する期末在庫表から、商品名と仕入れ原価の
-        対応を返す。より新しい基準月の在庫表を代わりに使うと、対象月にはまだ仕入れていない
-        商品が紛れ込むおそれがあるため、必ず同じ基準月の在庫表のみを使う。該当する在庫表が
-        なければ空の辞書を返す（呼び出し側は「その月の在庫表がない」ものとして扱う）。
+    def _inventory_rows_for_month(self, month: str | None) -> list[sqlite3.Row]:
+        """指定した基準年月（例: "2026-04"）と一致する期末在庫表の生レコードを返す。
+        より新しい基準月の在庫表を代わりに使うと、対象月にはまだ仕入れていない商品が
+        紛れ込むおそれがあるため、必ず同じ基準月の在庫表のみを使う。該当する在庫表が
+        なければ空リストを返す（呼び出し側は「その月の在庫表がない」ものとして扱う）。
         """
         if month is None:
-            return {}
+            return []
         with closing(self.connect()) as db, db:
             imps = db.execute(
                 "SELECT id, imported_at, metadata_json FROM imports WHERE kind='inventory'"
             ).fetchall()
             matches = [imp for imp in imps if json.loads(imp["metadata_json"]).get("as_of") == month]
             if not matches:
-                return {}
+                return []
             imp = max(matches, key=lambda row: row["imported_at"])
-            rows = db.execute("SELECT data_json FROM records WHERE import_id=?", (imp["id"],)).fetchall()
+            return db.execute("SELECT data_json FROM records WHERE import_id=?", (imp["id"],)).fetchall()
+
+    def _inventory_for_month(self, month: str | None) -> dict[str, float]:
+        """指定した基準年月の期末在庫表から、商品名と仕入れ原価の対応を返す。"""
         costs: dict[str, float] = {}
-        for row in rows:
+        for row in self._inventory_rows_for_month(month):
             data = json.loads(row["data_json"])
             product = (data.get("商品名") or "").strip()
             cost = _to_number(data.get("仕入れ原価"))
             if product and cost is not None:
                 costs[product] = cost
         return costs
+
+    def _inventory_sell_prices_for_month(self, month: str | None) -> dict[str, float]:
+        """指定した基準年月の期末在庫表から、商品名と販売価格の対応を返す。相場もの（同じ
+        商品でも毎回買取額が変わる）の内訳復元で、実際の買取額の目安レンジ（販売価格の
+        50〜90%程度）を計算するために使う。仕入れ原価とは別の値。
+        """
+        prices: dict[str, float] = {}
+        for row in self._inventory_rows_for_month(month):
+            data = json.loads(row["data_json"])
+            product = (data.get("商品名") or "").strip()
+            price = _to_number(data.get("販売価格"))
+            if product and price is not None and price > 0:
+                prices[product] = price
+        return prices
 
     def search_inventory(self, query: str, month: str | None, limit: int = 30) -> list[dict[str, Any]]:
         query = query.strip()
@@ -1490,9 +1526,15 @@ class TaxSystem:
         )
         if not entry or entry["resolved"] or entry["remainder"] is None:
             return None
-        return suggest_ledger_items(entry["remainder"], self._inventory_for_month(entry["month"]))
+        return suggest_ledger_items(entry["remainder"], self._inventory_sell_prices_for_month(entry["month"]))
 
-    def add_ledger_item(self, ledger_import_id: int, row_no: int, product: str, qty: float) -> None:
+    def add_ledger_item(self, ledger_import_id: int, row_no: int, product: str, qty: float,
+                        unit_cost: float | None = None) -> None:
+        """内訳に商品を1件追加する。unit_cost を指定しない通常の手動追加は、期末在庫表の
+        仕入れ原価をそのまま使う。unit_cost を指定した場合（AIによる提案など）は、相場もの
+        （毎回買取額が変わる）向けに、その商品の販売価格の50〜90%の範囲内であることを確認した
+        うえで、指定された単価をそのまま使う。
+        """
         with closing(self.connect()) as db, db:
             record = db.execute(
                 "SELECT data_json FROM records WHERE import_id=? AND row_no=?", (ledger_import_id, row_no)
@@ -1501,12 +1543,22 @@ class TaxSystem:
             raise ValueError("対象の行が見つかりません")
         purchase_date = _to_date(json.loads(record["data_json"]).get("日時"))
         month = f"{purchase_date.year:04d}-{purchase_date.month:02d}" if purchase_date else None
-        inventory = self._inventory_for_month(month)
-        if not inventory:
-            raise ValueError(f"{month or '該当行の仕入年月'}の期末在庫表が見つかりません。先に同じ基準月の期末在庫表を取り込んでください")
-        cost = inventory.get(product)
-        if cost is None:
-            raise ValueError(f"{month}の期末在庫表に「{product}」の仕入れ原価が見つかりません")
+        if unit_cost is not None:
+            sell_prices = self._inventory_sell_prices_for_month(month)
+            price = sell_prices.get(product)
+            if price is None:
+                raise ValueError(f"{month}の期末在庫表に「{product}」の販売価格が見つかりません")
+            low, high = price * 0.5, price * 0.9
+            if unit_cost < low - 0.5 or unit_cost > high + 0.5:
+                raise ValueError(f"単価{unit_cost}円が販売価格の50〜90%（{low:.0f}〜{high:.0f}円）の範囲外です")
+            cost = unit_cost
+        else:
+            inventory = self._inventory_for_month(month)
+            if not inventory:
+                raise ValueError(f"{month or '該当行の仕入年月'}の期末在庫表が見つかりません。先に同じ基準月の期末在庫表を取り込んでください")
+            cost = inventory.get(product)
+            if cost is None:
+                raise ValueError(f"{month}の期末在庫表に「{product}」の仕入れ原価が見つかりません")
         now = datetime.now().isoformat(timespec="seconds")
         with closing(self.connect()) as db, db:
             db.execute(

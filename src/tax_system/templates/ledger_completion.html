@@ -113,7 +113,8 @@
             style="display:flex; gap:0.5rem; align-items:center; margin:0.4rem 0;">
         <input type="hidden" name="month" value="{{ month or '' }}">
         <input type="hidden" name="product" value="{{ it.product }}">
-        <span style="flex:1;">{{ it.product }}（仕入れ原価 {{ it.unit_cost | num }}円） 提案合計: {{ it.amount | num }}円</span>
+        <input type="hidden" name="unit_cost" value="{{ it.unit_cost }}">
+        <span style="flex:1;">{{ it.product }}（想定買取額 {{ it.unit_cost | num }}円） 提案合計: {{ it.amount | num }}円</span>
         <input type="number" name="qty" step="any" min="0" required value="{{ it.qty | num }}" style="width:6em;">
         <button type="submit" class="button small">この提案を追加</button>
       </form>
