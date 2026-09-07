@@ -17,6 +17,7 @@ from tax_system.core import (
     LEDGER_POS_COLUMNS,
     TaxSystem,
     _to_date,
+    find_exact_ledger_item_match,
     suggest_ledger_items,
 )
 
@@ -494,9 +495,10 @@ class LedgerCompletionTests(unittest.TestCase):
             # 10000円の商品を2000円（20%）で買い取るのは想定レンジ（50-90%）から外れている
             self.app.add_ledger_item(ledger_id, row_no, "テストカードA", 1, unit_cost=2000)
 
-    def test_suggest_ledger_completion_never_invents_products(self):
-        # AI suggestions are priced off 販売価格 (50-90% range), which only the EC商品CSV
-        # import format (import_inventory_products) captures.
+    def test_suggest_ledger_completion_prefers_an_exact_match_without_calling_ai(self):
+        # remainder 11000: at qty=2, target unit price 5500 falls within テストカードA's
+        # 50-90% range (5000-9000), so a deterministic exact match exists and must be used
+        # instead of ever calling the AI (数量は1枚に限らないため、ほぼ必ず見つかる).
         self.app.import_inventory_products(
             self.write_inventory_products([
                 {"商品名": "テストカードA", "在庫数": "10", "仕入": "5000", "販売価格": "10000"},
@@ -505,12 +507,30 @@ class LedgerCompletionTests(unittest.TestCase):
         )
         ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))
         with patch("openai.OpenAI") as mock_openai_cls:
+            row_no = self.app.propose_ledger_breakdown(ledger_id)[0]["row_no"]
+            items = self.app.suggest_ledger_completion(ledger_id, row_no)
+            mock_openai_cls.assert_not_called()
+        self.assertEqual([{"product": "テストカードA", "qty": 2, "unit_cost": 5500, "amount": 11000}], items)
+
+    def test_suggest_ledger_completion_falls_back_to_ai_and_never_invents_products(self):
+        # remainder 4000 is below テストカードA's minimum plausible buy price at qty=1
+        # (50% of 10000 = 5000) and only shrinks further at higher qty, so no exact
+        # single-product match exists - the AI fallback must be used instead.
+        self.app.import_inventory_products(
+            self.write_inventory_products([
+                {"商品名": "テストカードA", "在庫数": "10", "仕入": "5000", "販売価格": "10000"},
+            ]),
+            as_of="2026-05",
+        )
+        self.assertIsNone(find_exact_ledger_item_match(4000, {"テストカードA": 10000}))
+        ledger_id = self.app.import_ledger(self.write_ledger_lump(4000))
+        with patch("openai.OpenAI") as mock_openai_cls:
             mock_client = MagicMock()
             mock_openai_cls.return_value = mock_client
             mock_response = MagicMock()
             mock_response.choices[0].message.content = json.dumps({
                 "items": [
-                    {"product": "テストカードA", "qty": 1, "unit_price": 7000},
+                    {"product": "テストカードA", "qty": 1, "unit_price": 5000},
                     {"product": "存在しないカード", "qty": 1, "unit_price": 5000},
                 ]
             })
@@ -518,7 +538,7 @@ class LedgerCompletionTests(unittest.TestCase):
             with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
                 row_no = self.app.propose_ledger_breakdown(ledger_id)[0]["row_no"]
                 items = self.app.suggest_ledger_completion(ledger_id, row_no)
-        self.assertEqual([{"product": "テストカードA", "qty": 1, "unit_cost": 7000, "amount": 7000}], items)
+        self.assertEqual([{"product": "テストカードA", "qty": 1, "unit_cost": 5000, "amount": 5000}], items)
 
 
 class BuildComparisonTests(unittest.TestCase):
@@ -1092,6 +1112,29 @@ class MergeLedgerTests(unittest.TestCase):
         second_merge = self.app.merge_ledger_imports([first, second, third])
 
         self.assertEqual([], self.app.find_ledger_duplicates(second_merge["import_id"]))
+
+
+class FindExactLedgerItemMatchTests(unittest.TestCase):
+    def test_finds_a_single_unit_match_within_the_price_range(self):
+        # A: sell 10000 -> range 5000-9000; remainder 7000 fits at qty=1
+        result = find_exact_ledger_item_match(7000, {"A": 10000})
+        self.assertEqual({"product": "A", "qty": 1, "unit_cost": 7000, "amount": 7000}, result)
+
+    def test_finds_a_multi_unit_match_when_a_single_unit_does_not_fit(self):
+        # A: range 5000-9000 at qty=1; remainder 11000 doesn't fit at qty=1, but
+        # 11000/2=5500 does at qty=2 (数量は1枚に限らない)
+        result = find_exact_ledger_item_match(11000, {"A": 10000})
+        self.assertEqual({"product": "A", "qty": 2, "unit_cost": 5500, "amount": 11000}, result)
+
+    def test_returns_none_when_nothing_fits_within_max_qty(self):
+        # remainder is always below the range (5000-9000) no matter the quantity, since
+        # dividing only makes the target unit price smaller
+        self.assertIsNone(find_exact_ledger_item_match(4000, {"A": 10000}))
+
+    def test_returns_none_for_empty_or_missing_remainder(self):
+        self.assertIsNone(find_exact_ledger_item_match(1000, {}))
+        self.assertIsNone(find_exact_ledger_item_match(0, {"A": 10000}))
+        self.assertIsNone(find_exact_ledger_item_match(None, {"A": 10000}))
 
 
 class SuggestLedgerItemsTests(unittest.TestCase):

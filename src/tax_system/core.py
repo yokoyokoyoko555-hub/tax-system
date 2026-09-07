@@ -121,6 +121,28 @@ def suggest_ledger_items(remainder: float, sell_prices: dict[str, float]) -> lis
         return None
 
 
+def find_exact_ledger_item_match(remainder: float, sell_prices: dict[str, float],
+                                 max_qty: int = 60) -> dict[str, Any] | None:
+    """残額を、期末在庫表の商品1種類×数量でぴったり説明できる組み合わせを機械的に探す。
+    相場もの（トレーディングカードなど）は同じ商品でも買取額が毎回変わり、単価は固定値
+    ではなく販売価格の50〜90%という幅で扱ってよく、数量も1枚に限らず何枚でもよいため、
+    数量を1から順に試し、残額÷数量がその幅にちょうど収まる商品が最初に見つかった時点で
+    確定する（AIに頼らず、ほぼ必ず・即座に・正確に見つかる）。見つからない場合のみ
+    suggest_ledger_items（AIによるあいまい一致）に任せる。
+    """
+    if not sell_prices or remainder is None or remainder <= 0:
+        return None
+    for qty in range(1, max_qty + 1):
+        target_unit = remainder / qty
+        for product, price in sell_prices.items():
+            low, high = price * 0.5, price * 0.9
+            if low - 0.01 <= target_unit <= high + 0.01:
+                unit_price = min(max(target_unit, low), high)
+                return {"product": product, "qty": qty, "unit_cost": round(unit_price, 2),
+                        "amount": round(unit_price * qty, 2)}
+    return None
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -1526,7 +1548,11 @@ class TaxSystem:
         )
         if not entry or entry["resolved"] or entry["remainder"] is None:
             return None
-        return suggest_ledger_items(entry["remainder"], self._inventory_sell_prices_for_month(entry["month"]))
+        sell_prices = self._inventory_sell_prices_for_month(entry["month"])
+        exact = find_exact_ledger_item_match(entry["remainder"], sell_prices)
+        if exact:
+            return [exact]
+        return suggest_ledger_items(entry["remainder"], sell_prices)
 
     def add_ledger_item(self, ledger_import_id: int, row_no: int, product: str, qty: float,
                         unit_cost: float | None = None) -> None:
