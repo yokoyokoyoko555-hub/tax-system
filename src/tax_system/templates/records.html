@@ -103,6 +103,30 @@
 </p>
 {% endif %}
 
+{% if purchase_edit_fields %}
+<section class="card">
+  <h2>仕入側を修正する</h2>
+  <p class="lead">
+    紐づけ・直接入力・自動一致などの結果が間違っていた場合、ここから仕入側の内容を
+    直接書き換えられます（案分の合算はせず、入力した内容でそのまま置き換わります）。
+  </p>
+  <form method="post" action="{{ url_for('comparison_edit_purchase') }}"
+        style="display:flex; gap:0.5rem; align-items:flex-end; flex-wrap:wrap;">
+    <input type="hidden" name="import_id" value="{{ imp.id }}">
+    <input type="hidden" name="sheet" value="{{ sheet }}">
+    <input type="hidden" name="row_no" value="{{ row_no }}">
+    <input type="hidden" name="field_count" value="{{ purchase_edit_fields|length }}">
+    {% for f in purchase_edit_fields %}
+    <input type="hidden" name="field_header_{{ loop.index0 }}" value="{{ f.header }}">
+    <label>{{ f.header }}
+      <input type="text" name="field_value_{{ loop.index0 }}" value="{{ f.value if f.value is not none else '' }}" style="width:9em;">
+    </label>
+    {% endfor %}
+    <button type="submit" class="button small">修正する</button>
+  </form>
+</section>
+{% endif %}
+
 {% if can_link_purchase %}
 <section class="card">
   {% if purchase_shortfall %}

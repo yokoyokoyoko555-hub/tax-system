@@ -1480,6 +1480,76 @@ class TaxSystem:
                  f"手動入力（仕入先{vendor}・数量{qty}・金額{amount}円）", now),
             )
 
+    def get_comparison_purchase_fields(self, import_id: int, sheet: str, row_no: int) -> list[dict[str, Any]] | None:
+        """相対表の行の仕入側（年月日より前の列）を、ヘッダー名と現在値のペアで返す。
+        修正フォームの初期値表示に使う。
+        """
+        with closing(self.connect()) as db, db:
+            record = db.execute(
+                "SELECT r.data_json, i.metadata_json FROM records r JOIN imports i ON r.import_id=i.id "
+                "WHERE r.import_id=? AND r.sheet_name=? AND r.row_no=? AND i.kind='comparison'",
+                (import_id, sheet, row_no),
+            ).fetchone()
+        if not record:
+            return None
+        metadata = json.loads(record["metadata_json"])
+        headers = next((s["headers"] for s in metadata.get("sheets", []) if s["name"] == sheet), None)
+        if not headers:
+            return None
+        split = next((i for i, h in enumerate(headers) if i > 0 and h == "年月日"), None)
+        if split is None:
+            return None
+        values = json.loads(record["data_json"])["values"]
+        purchase_headers = headers[:split]
+        return [
+            {"header": h, "value": values[i]} for i, h in enumerate(purchase_headers) if h
+        ]
+
+    def update_comparison_purchase_side(self, import_id: int, sheet: str, row_no: int,
+                                        values_by_header: dict[str, str]) -> None:
+        """相対表の行の仕入側を、ヘッダー名を指定して直接上書きする。手動紐づけ・直接入力・
+        自動一致などの結果が誤っていた場合に、案分の合算などは行わずそのまま置き換えて
+        修正するために使う。
+        """
+        with closing(self.connect()) as db, db:
+            record = db.execute(
+                "SELECT r.data_json, i.metadata_json FROM records r JOIN imports i ON r.import_id=i.id "
+                "WHERE r.import_id=? AND r.sheet_name=? AND r.row_no=? AND i.kind='comparison'",
+                (import_id, sheet, row_no),
+            ).fetchone()
+        if not record:
+            raise ValueError("対象の行が見つかりません")
+        metadata = json.loads(record["metadata_json"])
+        headers = next((s["headers"] for s in metadata.get("sheets", []) if s["name"] == sheet), None)
+        if not headers:
+            raise ValueError("シートの列構成が見つかりません")
+        split = next((i for i, h in enumerate(headers) if i > 0 and h == "年月日"), None)
+        if split is None:
+            raise ValueError("受入れ・払出しの境界を判定できません")
+        purchase_headers = headers[:split]
+
+        data = json.loads(record["data_json"])
+        values = data["values"]
+        for header, raw_value in values_by_header.items():
+            idx = _index_of(purchase_headers, header)
+            if idx is None:
+                continue
+            raw_value = raw_value.strip() if isinstance(raw_value, str) else raw_value
+            if header == "年月日":
+                values[idx] = _to_date(raw_value) if raw_value else None
+            elif raw_value in (None, ""):
+                values[idx] = None
+            else:
+                number = _to_number(raw_value)
+                values[idx] = number if number is not None else raw_value
+        data["values"] = values
+
+        with closing(self.connect()) as db, db:
+            db.execute(
+                "UPDATE records SET data_json=? WHERE import_id=? AND sheet_name=? AND row_no=?",
+                (json_text(data), import_id, sheet, row_no),
+            )
+
     @staticmethod
     def _comparison_purchase_shortfall_from_values(headers: list[str], values: list[Any]) -> dict[str, Any] | None:
         """相対表の1行分のheaders・valuesから、仕入数量が販売数量より少ない（一部しか仕入が
