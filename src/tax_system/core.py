@@ -1396,6 +1396,90 @@ class TaxSystem:
                  f"{'案分' if is_blank else '不足分の追加案分'}（数量{qty}・金額{amount}円）", now),
             )
 
+    def add_comparison_purchase_freeform(self, import_id: int, sheet: str, row_no: int,
+                                         vendor: str, purchase_date: str, qty: float, amount: float,
+                                         note: str = "") -> None:
+        """相対表の仕入側に、古物台帳を検索せず直接入力した仕入先・日付・数量・金額を書き込む。
+        対応する古物台帳の記録がまだ登録されていない場合向け（link_comparison_purchase_manually
+        の、古物台帳から選ばない版）。仕入側が空欄の行はそのまま埋め、既に一部だけ仕入が判明
+        している行（数量不足）には追加で合算する。
+        """
+        vendor = vendor.strip()
+        if not vendor:
+            raise ValueError("仕入先を入力してください")
+        purchase_date_value = _to_date(purchase_date)
+        if purchase_date_value is None:
+            raise ValueError("仕入年月日を正しい形式で入力してください")
+
+        with closing(self.connect()) as db, db:
+            record = db.execute(
+                "SELECT r.data_json, i.metadata_json FROM records r JOIN imports i ON r.import_id=i.id "
+                "WHERE r.import_id=? AND r.sheet_name=? AND r.row_no=? AND i.kind='comparison'",
+                (import_id, sheet, row_no),
+            ).fetchone()
+        if not record:
+            raise ValueError("対象の行が見つかりません")
+
+        metadata = json.loads(record["metadata_json"])
+        headers = next((s["headers"] for s in metadata.get("sheets", []) if s["name"] == sheet), None)
+        if not headers:
+            raise ValueError("シートの列構成が見つかりません")
+        split = next((i for i, h in enumerate(headers) if i > 0 and h == "年月日"), None)
+        if split is None:
+            raise ValueError("受入れ・払出しの境界を判定できません")
+        purchase_headers = headers[:split]
+
+        data = json.loads(record["data_json"])
+        values = data["values"]
+        qty_idx = _index_of(purchase_headers, "数量")
+        unit_idx = _index_of(purchase_headers, "単価", contains=True)
+        amount_idx = _index_of(purchase_headers, "代価", contains=True)
+        name_idx = _index_of(purchase_headers, "相手方名")
+        note_idx = _index_of(purchase_headers, "備考")
+
+        is_blank = values[0] in (None, "")
+        existing_qty = _to_number(values[qty_idx]) if qty_idx is not None else None
+        existing_amount = _to_number(values[amount_idx]) if amount_idx is not None else None
+
+        if is_blank:
+            new_qty, new_amount = qty, amount
+            values[0] = purchase_date_value
+            if name_idx is not None:
+                values[name_idx] = vendor
+            default_note = f"{vendor}より手動入力"
+        else:
+            new_qty = (existing_qty or 0) + qty
+            new_amount = (existing_amount or 0) + amount
+            default_note = f"不足分{qty}を{vendor}より手動入力で追加"
+
+        if qty_idx is not None:
+            values[qty_idx] = new_qty
+        if unit_idx is not None:
+            values[unit_idx] = new_amount / new_qty if new_qty else (amount / qty if qty else amount)
+        if amount_idx is not None:
+            values[amount_idx] = new_amount
+        if note_idx is not None:
+            note_text = note.strip() or default_note
+            values[note_idx] = f"{values[note_idx]} {note_text}".strip() if values[note_idx] else note_text
+        data["values"] = values
+
+        now = datetime.now().isoformat(timespec="seconds")
+        with closing(self.connect()) as db, db:
+            db.execute(
+                "UPDATE records SET data_json=? WHERE import_id=? AND sheet_name=? AND row_no=?",
+                (json_text(data), import_id, sheet, row_no),
+            )
+            db.execute(
+                """INSERT INTO allocations(sale_import_id, sale_sheet, sale_row_no, ledger_record_id, status, candidates_json, note, created_at)
+                   VALUES(?,?,?,?,?,?,?,?)
+                   ON CONFLICT(sale_import_id, sale_sheet, sale_row_no) DO UPDATE SET
+                     ledger_record_id=excluded.ledger_record_id, status=excluded.status,
+                     candidates_json=excluded.candidates_json, note=excluded.note, created_at=excluded.created_at
+                """,
+                (import_id, sheet, row_no, None, "manual_freeform", "[]",
+                 f"手動入力（仕入先{vendor}・数量{qty}・金額{amount}円）", now),
+            )
+
     @staticmethod
     def _comparison_purchase_shortfall_from_values(headers: list[str], values: list[Any]) -> dict[str, Any] | None:
         """相対表の1行分のheaders・valuesから、仕入数量が販売数量より少ない（一部しか仕入が

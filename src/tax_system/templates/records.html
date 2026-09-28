@@ -177,6 +177,24 @@
     <p class="muted">該当する古物台帳の記録が見つかりません</p>
     {% endif %}
   {% endif %}
+
+  <h3>対応する古物台帳がない場合は直接入力</h3>
+  <p class="lead">
+    古物台帳にまだ登録されていない仕入は、検索せずここから仕入先・仕入年月日・数量・金額を
+    直接入力して紐づけられます。
+  </p>
+  <form method="post" action="{{ url_for('comparison_link_purchase_freeform') }}"
+        style="display:flex; gap:0.5rem; align-items:flex-end; flex-wrap:wrap; margin:0.4rem 0;">
+    <input type="hidden" name="import_id" value="{{ imp.id }}">
+    <input type="hidden" name="sheet" value="{{ sheet }}">
+    <input type="hidden" name="row_no" value="{{ row_no }}">
+    <label>仕入先 <input type="text" name="vendor" required style="width:10em;"></label>
+    <label>仕入年月日 <input type="date" name="purchase_date" required></label>
+    <label>数量 <input type="number" name="qty" step="any" min="0" value="{{ purchase_shortfall.shortfall | num if purchase_shortfall else 1 }}" required style="width:5em;"></label>
+    <label>金額 <input type="number" name="amount" step="any" min="0" required style="width:8em;"></label>
+    <label>備考（任意） <input type="text" name="note" style="width:12em;"></label>
+    <button type="submit" class="button small">{{ "不足分として直接入力" if purchase_shortfall else "この内容で仕入を登録" }}</button>
+  </form>
 </section>
 {% endif %}
 

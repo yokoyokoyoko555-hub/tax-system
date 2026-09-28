@@ -364,6 +364,25 @@ def create_app(home: str | Path | None = None) -> Flask:
             flash("古物台帳の記録を手動で紐づけました", "success")
         return redirect(url_for("records_view", import_id=import_id, sheet=sheet, row_no=row_no))
 
+    @app.route("/comparison/link-purchase-freeform", methods=["POST"])
+    def comparison_link_purchase_freeform():
+        ts = system()
+        import_id = int(request.form["import_id"])
+        sheet = request.form["sheet"]
+        row_no = int(request.form["row_no"])
+        vendor = request.form.get("vendor", "")
+        purchase_date = request.form.get("purchase_date", "")
+        note = request.form.get("note", "")
+        try:
+            qty = float(request.form["qty"])
+            amount = float(request.form["amount"])
+            ts.add_comparison_purchase_freeform(import_id, sheet, row_no, vendor, purchase_date, qty, amount, note)
+        except (ValueError, TypeError) as exc:
+            flash(f"入力に失敗しました: {exc}", "error")
+        else:
+            flash("仕入を手動入力しました", "success")
+        return redirect(url_for("records_view", import_id=import_id, sheet=sheet, row_no=row_no))
+
     @app.route("/ledger-completion/<int:import_id>")
     def ledger_completion_view(import_id: int):
         ts = system()

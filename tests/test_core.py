@@ -1830,6 +1830,78 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
 
         self.assertIsNone(self.app.comparison_purchase_shortfall(comparison_id, "輸出販売", 3))
 
+    def test_freeform_fills_a_blank_purchase_side_without_a_ledger_record(self):
+        comparison_id = self.app.import_comparison(self.write_comparison_xlsx([
+            ("モンキー・D・ルフィ 【SR】【パラレル】", "2026-06-03", 3000, "海外客1"),
+        ]))
+
+        self.app.add_comparison_purchase_freeform(
+            comparison_id, "輸出販売", 3, vendor="山田太郎", purchase_date="2026-05-20", qty=1, amount=1500,
+        )
+
+        records, _ = self.app.get_records(comparison_id)
+        values = records[0]["data"]["values"]
+        self.assertEqual("2026-05-20", str(values[0]))
+        self.assertEqual(1, values[6])
+        self.assertEqual(1500, values[5])   # 単価
+        self.assertEqual(1500, values[7])   # 代価
+        self.assertEqual("山田太郎", values[9])
+        self.assertIn("山田太郎", values[10])
+
+    def test_freeform_rejects_a_blank_vendor_or_unparseable_date(self):
+        comparison_id = self.app.import_comparison(self.write_comparison_xlsx([
+            ("モンキー・D・ルフィ 【SR】【パラレル】", "2026-06-03", 3000, "海外客1"),
+        ]))
+
+        with self.assertRaises(ValueError):
+            self.app.add_comparison_purchase_freeform(
+                comparison_id, "輸出販売", 3, vendor="  ", purchase_date="2026-05-20", qty=1, amount=1500,
+            )
+        with self.assertRaises(ValueError):
+            self.app.add_comparison_purchase_freeform(
+                comparison_id, "輸出販売", 3, vendor="山田太郎", purchase_date="not-a-date", qty=1, amount=1500,
+            )
+
+    def test_freeform_tops_up_a_row_with_a_quantity_shortfall(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "輸出販売"
+        for col, value in enumerate(self.HEADERS, 1):
+            ws.cell(2, col).value = value
+        ws.cell(3, 1).value = "2026-05-14"
+        ws.cell(3, 2).value = "買受"
+        ws.cell(3, 3).value = "ワンピースカード"
+        ws.cell(3, 4).value = "特定カードX"
+        ws.cell(3, 5).value = "ー"
+        ws.cell(3, 6).value = 200
+        ws.cell(3, 7).value = 3
+        ws.cell(3, 8).value = 600
+        ws.cell(3, 10).value = "三浦俊介"
+        ws.cell(3, 11).value = "元の備考"
+        ws.cell(3, 12).value = "2026-07-01"
+        ws.cell(3, 13).value = "売却（輸出）"
+        ws.cell(3, 14).value = 1180
+        ws.cell(3, 15).value = 13
+        ws.cell(3, 16).value = 15340
+        ws.cell(3, 17).value = "Vincent song"
+        path = self.root / "comparison.xlsx"
+        wb.save(path)
+        comparison_id = self.app.import_comparison(path)
+
+        self.app.add_comparison_purchase_freeform(
+            comparison_id, "輸出販売", 3, vendor="別の仕入先", purchase_date="2026-06-01", qty=10, amount=3000,
+        )
+
+        records, _ = self.app.get_records(comparison_id)
+        values = records[0]["data"]["values"]
+        self.assertEqual("2026-05-14", str(values[0]))  # original date unchanged
+        self.assertEqual("三浦俊介", values[9])           # original vendor unchanged
+        self.assertEqual(13, values[6])
+        self.assertEqual(3600, values[7])
+        self.assertIn("不足分", values[10])
+        self.assertIn("元の備考", values[10])
+        self.assertIsNone(self.app.comparison_purchase_shortfall(comparison_id, "輸出販売", 3))
+
     def test_search_ledger_caps_results_and_reports_total_match_count(self):
         # a common card can have far more than 30 unconsumed purchase records; the total
         # must still be reported so the caller knows results were truncated, not exhaustive.
