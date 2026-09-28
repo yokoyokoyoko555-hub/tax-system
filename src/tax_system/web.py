@@ -320,21 +320,28 @@ def create_app(home: str | Path | None = None) -> Flask:
             imp["kind"] == "comparison" and isinstance(row_no, int)
             and len(rows) == 1 and rows[0].get("cells") and rows[0]["cells"][0] in (None, "")
         )
+        purchase_shortfall = (
+            ts.comparison_purchase_shortfall(import_id, sheet, row_no)
+            if imp["kind"] == "comparison" and isinstance(row_no, int) and len(rows) == 1 and not purchase_blank
+            else None
+        )
+        can_link_purchase = purchase_blank or purchase_shortfall is not None
         query = request.args.get("q", "").strip()
         search_month = request.args.get("search_month") or None
         search_results, search_total = (
-            ts.search_ledger(query, month=search_month) if purchase_blank and query else ([], 0)
+            ts.search_ledger(query, month=search_month) if can_link_purchase and query else ([], 0)
         )
         search_month_summary = (
             ts.search_ledger_month_summary(query)
-            if purchase_blank and query and search_total > len(search_results) else []
+            if can_link_purchase and query and search_total > len(search_results) else []
         )
         return render_template(
             "records.html", imp=imp, rows=rows, headers=display_headers,
             flat_columns=FLAT_COLUMNS.get(imp["kind"]),
             sheets=sheets, sheet=sheet, months=months, month=month,
             sort=sort, sort_dir=sort_dir, sibling_imports=sibling_imports, row_no=row_no,
-            purchase_blank=purchase_blank, query=query, search_month=search_month,
+            purchase_blank=purchase_blank, purchase_shortfall=purchase_shortfall,
+            can_link_purchase=can_link_purchase, query=query, search_month=search_month,
             search_results=search_results, search_total=search_total,
             search_month_summary=search_month_summary,
             page=page, total=total, total_pages=total_pages,

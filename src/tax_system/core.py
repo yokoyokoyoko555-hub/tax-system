@@ -808,11 +808,14 @@ class TaxSystem:
             if self._record_month("comparison", data, headers) != month:
                 continue
             item_headers = (headers or {}).get(row["sheet_name"])
-            cells = [v for h, v in zip(item_headers, data["values"]) if h] if item_headers else data["values"]
+            values = data["values"]
+            cells = [v for h, v in zip(item_headers, values) if h] if item_headers else values
+            shortfall = self._comparison_purchase_shortfall_from_values(item_headers, values) if item_headers else None
             results.append({
                 "import_id": row["import_id"], "source_name": row["source_name"],
                 "sheet_name": row["sheet_name"], "row_no": row["row_no"], "cells": cells,
                 "headers": [h for h in item_headers if h] if item_headers else None,
+                "shortfall": shortfall,
             })
         return results[offset:offset + limit], len(results)
 
@@ -1302,12 +1305,15 @@ class TaxSystem:
 
     def link_comparison_purchase_manually(self, import_id: int, sheet: str, row_no: int,
                                           ledger_record_id: int, qty: float, amount: float) -> None:
-        """相対表の仕入側が空欄の行に、古物台帳の購入記録を手動で紐づけて書き込む。
-        未開封品を仕入れて開封後に個別の商品として売った場合など、商品名が完全一致しないため
-        自動一致（fill_comparison_purchase_from_ledger）では埋まらないケース向け。数量・金額
+        """相対表の仕入側に、古物台帳の購入記録を手動で紐づけて書き込む。未開封品を仕入れて
+        開封後に個別の商品として売った場合など、商品名が完全一致しないため自動一致
+        （fill_comparison_purchase_from_ledger）では埋まらないケース向け。数量・金額
         （案分した額）は人が入力する。1件の未開封品から複数の商品を案分して売ることがあるため、
         通常の自動一致とは異なり、この古物台帳の記録を「使用済み」にはしない（他の行でも重ねて
         選べる）。
+        仕入側が空欄の行はそのまま埋める。すでに一部だけ仕入が判明している行（例: 3個分は
+        判明しているが13個売れていて10個分が不足）に対して呼ぶと、既存の数量・金額に
+        追加する形で合算する（既存の仕入年月日・相手方名はそのまま残す）。
         """
         with closing(self.connect()) as db, db:
             record = db.execute(
@@ -1343,17 +1349,33 @@ class TaxSystem:
         name_idx = _index_of(purchase_headers, "相手方名")
         note_idx = _index_of(purchase_headers, "備考")
 
-        values[0] = ledger_date
-        if qty_idx is not None:
-            values[qty_idx] = qty
-        if unit_idx is not None:
-            values[unit_idx] = amount / qty if qty else amount
-        if amount_idx is not None:
-            values[amount_idx] = amount
-        if name_idx is not None:
-            values[name_idx] = ledger_name
-        if note_idx is not None:
+        is_blank = values[0] in (None, "")
+        existing_qty = _to_number(values[qty_idx]) if qty_idx is not None else None
+        existing_amount = _to_number(values[amount_idx]) if amount_idx is not None else None
+
+        if is_blank:
+            new_qty, new_amount = qty, amount
+            values[0] = ledger_date
+            if name_idx is not None:
+                values[name_idx] = ledger_name
             note = f"未開封品「{ledger_product}」より案分" if ledger_product else "内訳未確定の仕入から案分"
+        else:
+            # 既に一部の仕入が判明している行への追加（不足分の補充）。年月日・相手方名は
+            # 元のまま残し、数量・金額だけ合算する。
+            new_qty = (existing_qty or 0) + qty
+            new_amount = (existing_amount or 0) + amount
+            note = (
+                f"不足分{qty}を「{ledger_product}」より追加案分" if ledger_product
+                else "不足分を追加案分"
+            )
+
+        if qty_idx is not None:
+            values[qty_idx] = new_qty
+        if unit_idx is not None:
+            values[unit_idx] = new_amount / new_qty if new_qty else amount / qty if qty else amount
+        if amount_idx is not None:
+            values[amount_idx] = new_amount
+        if note_idx is not None:
             values[note_idx] = f"{values[note_idx]} {note}".strip() if values[note_idx] else note
         data["values"] = values
 
@@ -1371,8 +1393,51 @@ class TaxSystem:
                      candidates_json=excluded.candidates_json, note=excluded.note, created_at=excluded.created_at
                 """,
                 (import_id, sheet, row_no, ledger_record_id, "manual_split", "[]",
-                 f"未開封品から案分（数量{qty}・金額{amount}円）", now),
+                 f"{'案分' if is_blank else '不足分の追加案分'}（数量{qty}・金額{amount}円）", now),
             )
+
+    @staticmethod
+    def _comparison_purchase_shortfall_from_values(headers: list[str], values: list[Any]) -> dict[str, Any] | None:
+        """相対表の1行分のheaders・valuesから、仕入数量が販売数量より少ない（一部しか仕入が
+        判明していない）場合の不足数量を計算する。comparison_purchase_shortfallと
+        get_comparison_month_recordsで共有する内部ヘルパー。
+        """
+        split = next((i for i, h in enumerate(headers) if i > 0 and h == "年月日"), None)
+        if split is None:
+            return None
+        purchase, sale = values[:split], values[split:]
+        if sale[0] in (None, "") or purchase[0] in (None, ""):
+            return None
+        purchase_headers, sale_headers = headers[:split], headers[split:]
+        pq_idx = _index_of(purchase_headers, "数量")
+        sq_idx = _index_of(sale_headers, "数量")
+        if pq_idx is None or sq_idx is None:
+            return None
+        purchase_qty = _to_number(purchase[pq_idx])
+        sale_qty = _to_number(sale[sq_idx])
+        if purchase_qty is None or sale_qty is None or purchase_qty >= sale_qty:
+            return None
+        return {"purchase_qty": purchase_qty, "sale_qty": sale_qty, "shortfall": sale_qty - purchase_qty}
+
+    def comparison_purchase_shortfall(self, import_id: int, sheet: str, row_no: int) -> dict[str, Any] | None:
+        """相対表の行の仕入数量が販売数量より少ない（一部しか仕入が判明していない）場合に、
+        その不足数量を返す。仕入側が完全に空欄の行（records_viewのpurchase_blankで扱う）や、
+        すでに数量が一致・超過している行はNoneを返す。
+        """
+        with closing(self.connect()) as db, db:
+            record = db.execute(
+                "SELECT r.data_json, i.metadata_json FROM records r JOIN imports i ON r.import_id=i.id "
+                "WHERE r.import_id=? AND r.sheet_name=? AND r.row_no=? AND i.kind='comparison'",
+                (import_id, sheet, row_no),
+            ).fetchone()
+        if not record:
+            return None
+        metadata = json.loads(record["metadata_json"])
+        headers = next((s["headers"] for s in metadata.get("sheets", []) if s["name"] == sheet), None)
+        if not headers:
+            return None
+        values = json.loads(record["data_json"])["values"]
+        return self._comparison_purchase_shortfall_from_values(headers, values)
 
     def _inventory_rows_for_month(self, month: str | None) -> list[sqlite3.Row]:
         """指定した基準年月（例: "2026-04"）と一致する期末在庫表の生レコードを返す。

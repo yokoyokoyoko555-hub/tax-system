@@ -71,14 +71,16 @@
     </thead>
     <tbody>
       {% for row in rows %}
-      <tr class="{{ 'level-error' if row.cells and row.cells[0] in (None, '') else '' }}">
+      <tr class="{{ 'level-error' if (row.cells and row.cells[0] in (None, '')) or row.shortfall else '' }}">
         <td>{{ row.import_id }}</td>
         <td>{{ row.source_name }}</td>
         <td>{{ row.sheet_name }}</td>
         <td>{{ row.row_no }}</td>
         <td>
           <a class="button small" href="{{ url_for('records_view', import_id=row.import_id, sheet=row.sheet_name, row_no=row.row_no) }}">
-            {{ "仕入先を紐づける" if row.cells and row.cells[0] in (None, '') else "この行を見る" }}
+            {% if row.cells and row.cells[0] in (None, '') %}仕入先を紐づける
+            {% elif row.shortfall %}仕入不足分{{ row.shortfall.shortfall | num }}を紐づける
+            {% else %}この行を見る{% endif %}
           </a>
         </td>
         {% for v in row.cells %}<td>{{ (v | num) if v is not none else "" }}</td>{% endfor %}

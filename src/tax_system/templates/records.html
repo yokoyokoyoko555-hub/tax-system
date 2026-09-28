@@ -103,15 +103,28 @@
 </p>
 {% endif %}
 
-{% if purchase_blank %}
+{% if can_link_purchase %}
 <section class="card">
+  {% if purchase_shortfall %}
+  <h2>古物台帳から不足分の仕入を追加で紐づける</h2>
+  <p class="lead">
+    この行は仕入数量（{{ purchase_shortfall.purchase_qty | num }}）が販売数量
+    （{{ purchase_shortfall.sale_qty | num }}）より少なく、不足分
+    {{ purchase_shortfall.shortfall | num }}が別の仕入からのものである可能性があります。
+    下から古物台帳を検索し、不足分を紐づけてください。追加すると、既存の仕入数量・金額に
+    合算されます（仕入年月日・相手方名は既存のまま残ります）。
+  </p>
+  {% else %}
   <h2>古物台帳から手動で仕入を紐づける</h2>
   <p class="lead">
     通常の自動一致（古物台帳から仕入側を埋める）は商品名が完全に一致する古物台帳しか使えません。
     未開封品を仕入れて開封後に個別の商品として売った場合など、対応する古物台帳の商品名が
     そのままでは一致しない場合は、ここから古物台帳を検索して手動で紐づけ、案分した数量・金額を
     入力してください。ここで選んだ古物台帳の記録は「使用済み」にはならないため、同じ未開封品から
-    複数の商品を案分して繰り返し紐づけることができます。<br>
+    複数の商品を案分して繰り返し紐づけることができます。
+  </p>
+  {% endif %}
+  <p class="lead">
     検索は商品名・氏名・備考のいずれかに一致すれば見つかります。商品名（例:「未開封」）で
     見つからない場合は、氏名で検索してください。過去に仕入れたが
     まだ商品名を明細登録していない古物台帳（商品名が空欄の行）も、氏名でなら見つかります。
@@ -154,9 +167,9 @@
         <input type="hidden" name="row_no" value="{{ row_no }}">
         <input type="hidden" name="ledger_record_id" value="{{ r.id }}">
         <span style="flex:1;">{{ r.name }} / {{ r.product or "（商品名未登録）" }} / {{ r.date }} / 仕入合計{{ r.amount | num }}円</span>
-        <label>数量 <input type="number" name="qty" step="any" min="0" value="1" required style="width:5em;"></label>
+        <label>数量 <input type="number" name="qty" step="any" min="0" value="{{ purchase_shortfall.shortfall | num if purchase_shortfall else 1 }}" required style="width:5em;"></label>
         <label>案分金額 <input type="number" name="amount" step="any" min="0" required style="width:8em;"></label>
-        <button type="submit" class="button small">この仕入に紐づける</button>
+        <button type="submit" class="button small">{{ "不足分として紐づける" if purchase_shortfall else "この仕入に紐づける" }}</button>
       </form>
       {% endfor %}
     </div>

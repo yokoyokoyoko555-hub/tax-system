@@ -1753,6 +1753,83 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
         self.assertEqual("箱売り太郎", values[9])         # 相手方名
         self.assertIn("未開封BOX", values[10])            # 備考
 
+    def test_comparison_purchase_shortfall_detects_partial_purchase_quantity(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "輸出販売"
+        for col, value in enumerate(self.HEADERS, 1):
+            ws.cell(2, col).value = value
+        ws.cell(3, 1).value = "2026-05-14"
+        ws.cell(3, 2).value = "買受"
+        ws.cell(3, 3).value = "ワンピースカード"
+        ws.cell(3, 4).value = "特定カードX"
+        ws.cell(3, 5).value = "ー"
+        ws.cell(3, 6).value = 200
+        ws.cell(3, 7).value = 3
+        ws.cell(3, 8).value = 600
+        ws.cell(3, 10).value = "三浦俊介"
+        ws.cell(3, 11).value = "元の備考"
+        ws.cell(3, 12).value = "2026-07-01"
+        ws.cell(3, 13).value = "売却（輸出）"
+        ws.cell(3, 14).value = 1180
+        ws.cell(3, 15).value = 13
+        ws.cell(3, 16).value = 15340
+        ws.cell(3, 17).value = "Vincent song"
+        path = self.root / "comparison.xlsx"
+        wb.save(path)
+        comparison_id = self.app.import_comparison(path)
+
+        shortfall = self.app.comparison_purchase_shortfall(comparison_id, "輸出販売", 3)
+
+        self.assertEqual({"purchase_qty": 3, "sale_qty": 13, "shortfall": 10}, shortfall)
+
+    def test_links_additional_purchase_to_a_row_with_a_quantity_shortfall(self):
+        # purchase side already has 3 units from 三浦俊介; sale side sold 13, so 10 are
+        # missing - link_comparison_purchase_manually should top up rather than overwrite.
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "輸出販売"
+        for col, value in enumerate(self.HEADERS, 1):
+            ws.cell(2, col).value = value
+        ws.cell(3, 1).value = "2026-05-14"
+        ws.cell(3, 2).value = "買受"
+        ws.cell(3, 3).value = "ワンピースカード"
+        ws.cell(3, 4).value = "特定カードX"
+        ws.cell(3, 5).value = "ー"
+        ws.cell(3, 6).value = 200
+        ws.cell(3, 7).value = 3
+        ws.cell(3, 8).value = 600
+        ws.cell(3, 10).value = "三浦俊介"
+        ws.cell(3, 11).value = "元の備考"
+        ws.cell(3, 12).value = "2026-07-01"
+        ws.cell(3, 13).value = "売却（輸出）"
+        ws.cell(3, 14).value = 1180
+        ws.cell(3, 15).value = 13
+        ws.cell(3, 16).value = 15340
+        ws.cell(3, 17).value = "Vincent song"
+        path = self.root / "comparison.xlsx"
+        wb.save(path)
+        comparison_id = self.app.import_comparison(path)
+
+        ledger_id = self.app.import_ledger(self.write_ledger([
+            ["2026-06-01", "別の仕入先", "", "", "", "", "未開封BOX", "1", "8000", "8000", ""],
+        ]))
+        records, _ = self.app.get_records(ledger_id)
+        ledger_record_id = records[0]["id"]
+
+        self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 3, ledger_record_id, qty=10, amount=8000)
+
+        records, _ = self.app.get_records(comparison_id)
+        values = records[0]["data"]["values"]
+        self.assertEqual("2026-05-14", str(values[0]))  # date unchanged
+        self.assertEqual("三浦俊介", values[9])           # vendor unchanged
+        self.assertEqual(13, values[6])                  # qty: 3 existing + 10 added
+        self.assertEqual(8600, values[7])                # amount: 600 existing + 8000 added
+        self.assertIn("不足分", values[10])
+        self.assertIn("元の備考", values[10])
+
+        self.assertIsNone(self.app.comparison_purchase_shortfall(comparison_id, "輸出販売", 3))
+
     def test_search_ledger_caps_results_and_reports_total_match_count(self):
         # a common card can have far more than 30 unconsumed purchase records; the total
         # must still be reported so the caller knows results were truncated, not exhaustive.
