@@ -1488,9 +1488,10 @@ class TaxSystem:
                  f"手動入力（仕入先{vendor}・数量{qty}・金額{amount}円）", now),
             )
 
-    def get_comparison_purchase_fields(self, import_id: int, sheet: str, row_no: int) -> list[dict[str, Any]] | None:
-        """相対表の行の仕入側（年月日より前の列）を、ヘッダー名と現在値のペアで返す。
-        修正フォームの初期値表示に使う。
+    def get_comparison_purchase_fields(self, import_id: int, sheet: str, row_no: int,
+                                       side: str = "purchase") -> list[dict[str, Any]] | None:
+        """相対表の行の仕入側（side="purchase"）または販売側（side="sale"）を、ヘッダー名と
+        現在値のペアで返す。修正フォームの初期値表示に使う。
         """
         with closing(self.connect()) as db, db:
             record = db.execute(
@@ -1508,16 +1509,16 @@ class TaxSystem:
         if split is None:
             return None
         values = json.loads(record["data_json"])["values"]
-        purchase_headers = headers[:split]
+        start, end = (split, len(headers)) if side == "sale" else (0, split)
         return [
-            {"header": h, "value": values[i]} for i, h in enumerate(purchase_headers) if h
+            {"header": headers[i], "value": values[i]} for i in range(start, end) if headers[i]
         ]
 
     def update_comparison_purchase_side(self, import_id: int, sheet: str, row_no: int,
-                                        values_by_header: dict[str, str]) -> None:
-        """相対表の行の仕入側を、ヘッダー名を指定して直接上書きする。手動紐づけ・直接入力・
-        自動一致などの結果が誤っていた場合に、案分の合算などは行わずそのまま置き換えて
-        修正するために使う。
+                                        values_by_header: dict[str, str], side: str = "purchase") -> None:
+        """相対表の行の仕入側（side="purchase"）または販売側（side="sale"）を、ヘッダー名を
+        指定して直接上書きする。手動紐づけ・直接入力・自動一致の結果や、元データの入力ミスを、
+        案分の合算などは行わずそのまま置き換えて修正するために使う。
         """
         with closing(self.connect()) as db, db:
             record = db.execute(
@@ -1534,16 +1535,18 @@ class TaxSystem:
         split = next((i for i, h in enumerate(headers) if i > 0 and h == "年月日"), None)
         if split is None:
             raise ValueError("受入れ・払出しの境界を判定できません")
-        purchase_headers = headers[:split]
+        side_headers = headers[split:] if side == "sale" else headers[:split]
+        offset = split if side == "sale" else 0
 
         data = json.loads(record["data_json"])
         values = data["values"]
         for header, raw_value in values_by_header.items():
-            idx = _index_of(purchase_headers, header)
+            idx = _index_of(side_headers, header)
             if idx is None:
                 continue
+            idx += offset
             raw_value = raw_value.strip() if isinstance(raw_value, str) else raw_value
-            if header == "年月日":
+            if header == "年月日" and side == "purchase":
                 values[idx] = _to_date(raw_value) if raw_value else None
             elif raw_value in (None, ""):
                 values[idx] = None

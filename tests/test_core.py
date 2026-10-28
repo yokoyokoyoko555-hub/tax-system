@@ -1893,6 +1893,28 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
         self.assertEqual("4あーるさん", values[10])
         self.assertEqual("三浦俊介", values[9])  # untouched field stays as-is
 
+    def test_update_comparison_sale_side_fixes_the_sale_quantity_without_touching_purchase_side(self):
+        # both sides have a 数量 / 相手方名 header; side="sale" must edit only the sale-side ones
+        comparison_id = self.app.import_comparison(self.write_comparison_with_partial_purchase())
+
+        fields = self.app.get_comparison_purchase_fields(comparison_id, "輸出販売", 3, side="sale")
+        by_header = {f["header"]: f["value"] for f in fields}
+        self.assertEqual(13, by_header["数量"])
+        self.assertEqual("Vincent song", by_header["相手方名"])
+
+        self.app.update_comparison_purchase_side(
+            comparison_id, "輸出販売", 3, {"数量": "3", "代価（JPY）": "3540"}, side="sale",
+        )
+
+        records, _ = self.app.get_records(comparison_id)
+        values = records[0]["data"]["values"]
+        self.assertEqual(3, values[14])      # sale 数量
+        self.assertEqual(3540, values[15])   # sale 代価
+        self.assertEqual(3, values[6])       # purchase 数量 untouched
+        self.assertEqual("三浦俊介", values[9])
+        self.assertEqual("Vincent song", values[16])
+        self.assertIsNone(self.app.comparison_purchase_shortfall(comparison_id, "輸出販売", 3))
+
     def test_update_comparison_purchase_side_ignores_unknown_headers_and_clears_blank_values(self):
         comparison_id = self.app.import_comparison(self.write_comparison_with_partial_purchase())
 

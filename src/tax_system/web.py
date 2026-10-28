@@ -340,6 +340,10 @@ def create_app(home: str | Path | None = None) -> Flask:
             if imp["kind"] == "comparison" and isinstance(row_no, int) and len(rows) == 1
             else None
         )
+        sale_edit_fields = (
+            ts.get_comparison_purchase_fields(import_id, sheet, row_no, side="sale")
+            if purchase_edit_fields is not None else None
+        )
         return render_template(
             "records.html", imp=imp, rows=rows, headers=display_headers,
             flat_columns=FLAT_COLUMNS.get(imp["kind"]),
@@ -349,6 +353,7 @@ def create_app(home: str | Path | None = None) -> Flask:
             can_link_purchase=can_link_purchase, query=query, search_month=search_month,
             search_results=search_results, search_total=search_total,
             search_month_summary=search_month_summary, purchase_edit_fields=purchase_edit_fields,
+            sale_edit_fields=sale_edit_fields,
             page=page, total=total, total_pages=total_pages,
         )
 
@@ -394,6 +399,7 @@ def create_app(home: str | Path | None = None) -> Flask:
         import_id = int(request.form["import_id"])
         sheet = request.form["sheet"]
         row_no = int(request.form["row_no"])
+        side = "sale" if request.form.get("side") == "sale" else "purchase"
         count = int(request.form.get("field_count", 0))
         values_by_header = {}
         for i in range(count):
@@ -401,11 +407,11 @@ def create_app(home: str | Path | None = None) -> Flask:
             if header:
                 values_by_header[header] = request.form.get(f"field_value_{i}", "")
         try:
-            ts.update_comparison_purchase_side(import_id, sheet, row_no, values_by_header)
+            ts.update_comparison_purchase_side(import_id, sheet, row_no, values_by_header, side=side)
         except (ValueError, TypeError) as exc:
             flash(f"修正に失敗しました: {exc}", "error")
         else:
-            flash("仕入側を修正しました", "success")
+            flash("販売側を修正しました" if side == "sale" else "仕入側を修正しました", "success")
         return redirect(url_for("records_view", import_id=import_id, sheet=sheet, row_no=row_no))
 
     @app.route("/ledger-completion/<int:import_id>")
