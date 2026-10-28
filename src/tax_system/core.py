@@ -320,6 +320,22 @@ class TaxSystem:
             # 古物台帳は取込のたびに全ての生データから結合し直す（取込IDが変わる）ため、
             # 重複の「残す」判定は取込IDに紐づけず内容（key_json）だけで判定するように
             # 変更した。旧スキーマ（import_id列あり）が残っていれば作り直す。
+            # 案分（manual_split）で古物台帳1件からいくら使ったかを持つ。古物台帳の記録は結合し直す
+            # たびにIDが変わるため、割当の古物台帳IDは最新の結合データのIDに付け替える
+            # （_sync_allocations_to_latest_merged）。その付け替え済みの結合IDをapp_stateに記録する。
+            allocation_cols = {r["name"] for r in db.execute("PRAGMA table_info(allocations)").fetchall()}
+            for column in ("used_qty", "used_amount"):
+                if column not in allocation_cols:
+                    db.execute(f"ALTER TABLE allocations ADD COLUMN {column} REAL")
+            for row in db.execute(
+                "SELECT id, note FROM allocations WHERE status='manual_split' AND used_amount IS NULL"
+            ).fetchall():
+                match = re.search(r"数量([\d.]+)・金額([\d.]+)円", row["note"] or "")
+                if match:
+                    db.execute("UPDATE allocations SET used_qty=?, used_amount=? WHERE id=?",
+                               (float(match.group(1)), float(match.group(2)), row["id"]))
+            db.execute("CREATE INDEX IF NOT EXISTS idx_allocations_ledger ON allocations(ledger_record_id)")
+            db.execute("CREATE TABLE IF NOT EXISTS app_state(key TEXT PRIMARY KEY, value TEXT)")
             cols = {r["name"] for r in db.execute("PRAGMA table_info(ledger_duplicate_dismissals)").fetchall()}
             if "import_id" in cols:
                 db.execute("DROP TABLE ledger_duplicate_dismissals")
@@ -1116,6 +1132,8 @@ class TaxSystem:
         対応する古物台帳の購入記録を商品名・数量・日付・取引相手で自動的に探し、割り当てる。
         1件の古物台帳記録は、どこかひとつの販売にしか対応付けない（使い回さない）。
         """
+        self._sync_allocations_to_latest_merged()
+        merged_ledger = self.latest_merged_ledger_import()
         with closing(self.connect()) as db, db:
             imp = db.execute("SELECT * FROM imports WHERE id=?", (comparison_import_id,)).fetchone()
             if not imp or imp["kind"] != "comparison":
@@ -1124,9 +1142,16 @@ class TaxSystem:
             records = db.execute(
                 "SELECT * FROM records WHERE import_id=? ORDER BY sheet_name, row_no", (comparison_import_id,)
             ).fetchall()
-            ledger_rows = db.execute(
-                "SELECT r.id, r.data_json FROM records r JOIN imports i ON r.import_id = i.id WHERE i.kind='ledger'"
-            ).fetchall()
+            # 結合済みの最新の古物台帳だけを対象にする（結合し直すたびに前回までの内容を丸ごと含む
+            # 新しい取込が残るため、全部を対象にすると同じ記録が世代の数だけ候補に出てしまう）。
+            # 結合済みがまだ無い場合のみ、取込済みの古物台帳すべてを対象にする。
+            ledger_rows = (
+                db.execute("SELECT id, data_json FROM records WHERE import_id=?", (merged_ledger["id"],)).fetchall()
+                if merged_ledger else
+                db.execute(
+                    "SELECT r.id, r.data_json FROM records r JOIN imports i ON r.import_id = i.id WHERE i.kind='ledger'"
+                ).fetchall()
+            )
             existing = {
                 (row["sale_sheet"], row["sale_row_no"]): row
                 for row in db.execute(
@@ -1137,7 +1162,7 @@ class TaxSystem:
                 row["ledger_record_id"]
                 for row in db.execute(
                     "SELECT ledger_record_id FROM allocations WHERE ledger_record_id IS NOT NULL "
-                    "AND status IN ('matched','manual') AND sale_import_id != ?",
+                    "AND status IN ('matched','manual','manual_split') AND sale_import_id != ?",
                     (comparison_import_id,),
                 ).fetchall()
             }
@@ -1162,8 +1187,10 @@ class TaxSystem:
             ledger_by_product.setdefault(entry["product"], []).append(entry)
 
         consumed = set(other_consumed)
+        # この取込のすでにマッチ済みの行の記録は、先に使用済みとして確保する（並び順で、
+        # マッチ済みの記録が別の行に取られないように）
         for row in existing.values():
-            if row["status"] == "manual" and row["ledger_record_id"] is not None:
+            if row["status"] in ("matched", "manual", "manual_split") and row["ledger_record_id"] is not None:
                 consumed.add(row["ledger_record_id"])
 
         results: list[dict[str, Any]] = []
@@ -1182,7 +1209,7 @@ class TaxSystem:
             purchase_headers = headers[:split]
 
             prior = existing.get((record["sheet_name"], record["row_no"]))
-            if prior and prior["status"] == "manual":
+            if prior and prior["status"] in ("manual", "manual_split", "manual_freeform"):
                 results.append({
                     "row_no": record["row_no"], "sheet": record["sheet_name"], "status": "manual",
                     "ledger_record_id": prior["ledger_record_id"],
@@ -1201,6 +1228,28 @@ class TaxSystem:
             counterparty = str(purchase[name_idx]).strip() if name_idx is not None and purchase[name_idx] not in (None, "") else None
             amount = _to_number(purchase[amount_idx]) if amount_idx is not None else None
 
+            sticky = (
+                ledger_by_id.get(prior["ledger_record_id"])
+                if prior and prior["status"] == "matched" and prior["ledger_record_id"] is not None else None
+            )
+            if sticky:
+                # 一度マッチした行は、再チェックしても外さない（数量・日付・金額の不一致だけ再確認する）
+                mismatches = []
+                if qty is not None and sticky["qty"] != qty:
+                    mismatches.append("数量")
+                if purchase_date is not None and sticky["date"] != purchase_date:
+                    mismatches.append("日付")
+                if amount is not None and sticky["amount"] is not None and abs(sticky["amount"] - amount) > 0.5:
+                    mismatches.append("金額")
+                note = ("・".join(mismatches) + "が一致しません") if mismatches else None
+                upserts.append((comparison_import_id, record["sheet_name"], record["row_no"], sticky["id"],
+                                "matched", "[]", note, now))
+                results.append({
+                    "row_no": record["row_no"], "sheet": record["sheet_name"], "status": "matched",
+                    "ledger_record_id": sticky["id"], "ledger": sticky, "product": product,
+                    "note": note, "candidates": [],
+                })
+                continue
             candidates = (
                 [c for c in ledger_by_product.get(product, []) if c["id"] not in consumed] if product else []
             )
@@ -1250,6 +1299,88 @@ class TaxSystem:
             )
         return results
 
+    def _sync_allocations_to_latest_merged(self) -> int:
+        """割当（allocations）の古物台帳IDを、最新の結合済み古物台帳のIDに付け替える。
+        古物台帳は取り込むたびに結合データが新しく作り直され記録のIDが変わるため、IDのままだと
+        「一度マッチした記録」が次の結合後には使用済みと判定されず、別の売上に再びマッチして
+        しまう。日時・名前・商品名・個数・金額が同じ記録（同じものが複数ある場合は先頭から順）
+        に付け替える。最新の結合IDごとに1回だけ行う。付け替えた件数を返す。
+        """
+        merged = self.latest_merged_ledger_import()
+        if not merged:
+            return 0
+        with closing(self.connect()) as db, db:
+            state = db.execute("SELECT value FROM app_state WHERE key='allocations_synced_merged_id'").fetchone()
+            if state and state["value"] == str(merged["id"]):
+                return 0
+            stale = [
+                r[0] for r in db.execute(
+                    "SELECT DISTINCT ledger_record_id FROM allocations WHERE ledger_record_id IS NOT NULL "
+                    "AND ledger_record_id NOT IN (SELECT id FROM records WHERE import_id=?)", (merged["id"],),
+                ).fetchall()
+            ]
+            remapped = 0
+            if stale:
+                by_key: dict[str, list[int]] = {}
+                for row in db.execute(
+                    "SELECT id, data_json FROM records WHERE import_id=? ORDER BY row_no, id", (merged["id"],)
+                ).fetchall():
+                    by_key.setdefault(self._ledger_duplicate_key(json.loads(row["data_json"])), []).append(row["id"])
+                in_use = {
+                    r[0] for r in db.execute(
+                        "SELECT DISTINCT ledger_record_id FROM allocations WHERE ledger_record_id IN "
+                        "(SELECT id FROM records WHERE import_id=?)", (merged["id"],),
+                    ).fetchall()
+                }
+                for old_id in sorted(stale):
+                    old = db.execute("SELECT data_json FROM records WHERE id=?", (old_id,)).fetchone()
+                    if not old:
+                        continue
+                    free = [i for i in by_key.get(self._ledger_duplicate_key(json.loads(old["data_json"])), [])
+                            if i not in in_use]
+                    if not free:
+                        continue
+                    in_use.add(free[0])
+                    db.execute("UPDATE allocations SET ledger_record_id=? WHERE ledger_record_id=?", (free[0], old_id))
+                    remapped += 1
+            db.execute(
+                "INSERT INTO app_state(key, value) VALUES('allocations_synced_merged_id', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(merged["id"]),),
+            )
+        return remapped
+
+    @staticmethod
+    def _ledger_usage_from_db(db: sqlite3.Connection) -> dict[int, dict[str, Any]]:
+        """古物台帳の記録ごとの使用状況。consumed=自動一致/手動割当で使用済み、
+        used_amount=案分（manual_split）で使った金額の合計。
+        """
+        usage: dict[int, dict[str, Any]] = {}
+        for row in db.execute(
+            "SELECT ledger_record_id, status, used_amount FROM allocations WHERE ledger_record_id IS NOT NULL"
+        ).fetchall():
+            entry = usage.setdefault(row["ledger_record_id"], {"consumed": False, "used_amount": 0.0, "split": False})
+            if row["status"] in ("matched", "manual"):
+                entry["consumed"] = True
+            elif row["status"] == "manual_split":
+                entry["split"] = True
+                entry["used_amount"] += row["used_amount"] or 0
+        return usage
+
+    def ledger_record_usage(self, ledger_record_id: int) -> dict[str, Any] | None:
+        """古物台帳1件の元金額・案分済み金額・残りを返す（案分の表示・上限チェック用）。"""
+        self._sync_allocations_to_latest_merged()
+        with closing(self.connect()) as db, db:
+            row = db.execute("SELECT data_json FROM records WHERE id=?", (ledger_record_id,)).fetchone()
+            usage = self._ledger_usage_from_db(db).get(ledger_record_id, {})
+        if not row:
+            return None
+        total = _to_number(json.loads(row["data_json"]).get("金額"))
+        used = usage.get("used_amount", 0.0)
+        return {
+            "amount": total, "used_amount": used, "consumed": usage.get("consumed", False),
+            "remaining": (total - used) if total is not None else None,
+        }
+
     def _search_ledger_matches(self, query: str) -> list[dict[str, Any]]:
         """search_ledgerとsearch_ledger_month_summaryが共有する、商品名・氏名・備考いずれかが
         一致する古物台帳（相対表で使用済み=matched/manualを除く）を全件返す内部ヘルパー。
@@ -1267,6 +1398,7 @@ class TaxSystem:
         merged = self.latest_merged_ledger_import()
         if not merged:
             return []
+        self._sync_allocations_to_latest_merged()
         like_pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         with closing(self.connect()) as db, db:
             rows = db.execute(
@@ -1278,21 +1410,26 @@ class TaxSystem:
                 ") ORDER BY r.id",
                 (merged["id"], like_pattern, like_pattern, like_pattern),
             ).fetchall()
-            consumed = {
-                row["ledger_record_id"]
-                for row in db.execute(
-                    "SELECT ledger_record_id FROM allocations WHERE ledger_record_id IS NOT NULL AND status IN ('matched','manual')"
-                ).fetchall()
-            }
+            usage = self._ledger_usage_from_db(db)
         matches = []
         for row in rows:
-            if row["id"] in consumed:
-                continue
+            used = usage.get(row["id"])
             data = json.loads(row["data_json"])
+            total = _to_number(data.get("金額"))
+            if used and used["consumed"]:
+                continue  # すでに自動一致・手動割当で使用済み
+            remaining = None
+            used_amount = 0.0
+            if used and used["split"]:
+                used_amount = used["used_amount"]
+                remaining = (total - used_amount) if total is not None else None
+                if remaining is not None and remaining <= 0.5:
+                    continue  # 案分で使い切っている
             matches.append({
                 "id": row["id"], "name": data.get("名前"), "product": data.get("商品名"),
                 "qty": data.get("個数"), "date": data.get("日時"), "amount": data.get("金額"),
                 "purchase_date": _to_date(data.get("日時")),
+                "used_amount": used_amount, "remaining": remaining,
             })
         return matches
 
@@ -1430,13 +1567,15 @@ class TaxSystem:
 
         with closing(self.connect()) as db, db:
             db.execute(
-                """INSERT INTO allocations(sale_import_id, sale_sheet, sale_row_no, ledger_record_id, status, candidates_json, note, created_at)
-                   VALUES(?,?,?,?,?,?,?,?)
+                """INSERT INTO allocations(sale_import_id, sale_sheet, sale_row_no, ledger_record_id, status, candidates_json, note, created_at, used_qty, used_amount)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(sale_import_id, sale_sheet, sale_row_no) DO UPDATE SET
                      ledger_record_id=excluded.ledger_record_id, status=excluded.status,
-                     candidates_json=excluded.candidates_json, note=excluded.note, created_at=excluded.created_at
+                     candidates_json=excluded.candidates_json, note=excluded.note, created_at=excluded.created_at,
+                     used_qty=excluded.used_qty, used_amount=excluded.used_amount
                 """,
-                (import_id, sheet, target_row_no, ledger_record_id, status, "[]", alloc_note, now),
+                (import_id, sheet, target_row_no, ledger_record_id, status, "[]", alloc_note, now,
+                 qty if status == "manual_split" else None, amount if status == "manual_split" else None),
             )
         return target_row_no
 
@@ -1455,6 +1594,14 @@ class TaxSystem:
             ledger_row = db.execute("SELECT data_json FROM records WHERE id=?", (ledger_record_id,)).fetchone()
         if not ledger_row:
             raise ValueError("対象の古物台帳の記録が見つかりません")
+        usage = self.ledger_record_usage(ledger_record_id)
+        if usage["consumed"]:
+            raise ValueError("この古物台帳の記録は、すでに別の行にマッチ済みです")
+        if usage["remaining"] is not None and amount > usage["remaining"] + 0.5:
+            raise ValueError(
+                f"案分の合計が元の仕入金額を超えます（元の金額{usage['amount']:.0f}円・案分済み"
+                f"{usage['used_amount']:.0f}円・残り{usage['remaining']:.0f}円）"
+            )
         data, _, _ = self._comparison_row_context(import_id, sheet, row_no)
         is_blank = data["values"][0] in (None, "")
 
@@ -2246,6 +2393,7 @@ class TaxSystem:
         や「仕入との対応」画面と一貫させる）。month（例:"2026-06"）を指定すると、販売側の
         年月で絞り込む。あいまい一致は行わないため、見つからない行はそのまま空欄で残る。
         """
+        self._sync_allocations_to_latest_merged()
         with closing(self.connect()) as db, db:
             comparison_rows = db.execute(
                 "SELECT r.import_id, r.sheet_name, r.row_no, r.data_json, i.metadata_json "
@@ -2260,7 +2408,7 @@ class TaxSystem:
                 row["ledger_record_id"]
                 for row in db.execute(
                     "SELECT ledger_record_id FROM allocations WHERE ledger_record_id IS NOT NULL "
-                    "AND status IN ('matched','manual')"
+                    "AND status IN ('matched','manual','manual_split')"
                 ).fetchall()
             }
 

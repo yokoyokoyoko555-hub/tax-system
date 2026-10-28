@@ -373,9 +373,17 @@ def create_app(home: str | Path | None = None) -> Flask:
         except (ValueError, TypeError) as exc:
             flash(f"紐づけに失敗しました: {exc}", "error")
         else:
-            flash(
+            message = (
                 f"この行を2行に分割し、新しい行（{new_row_no}行目）に仕入を紐づけました"
-                if new_row_no != row_no else "古物台帳の記録を手動で紐づけました", "success")
+                if new_row_no != row_no else "古物台帳の記録を手動で紐づけました"
+            )
+            usage = ts.ledger_record_usage(ledger_record_id)
+            if usage and usage["amount"] is not None:
+                message += (
+                    f"（この仕入の元の金額 {usage['amount']:.0f}円 のうち、案分済み {usage['used_amount']:.0f}円・"
+                    f"残り {usage['remaining']:.0f}円）"
+                )
+            flash(message, "success")
         return redirect(url_for("records_view", import_id=import_id, sheet=sheet, row_no=row_no))
 
     @app.route("/comparison/link-purchase-freeform", methods=["POST"])

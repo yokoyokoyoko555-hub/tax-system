@@ -256,6 +256,32 @@ class AllocationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.app.export(comparison_id, self.root / "blocked.xlsx", template_id=None)
 
+    def test_an_existing_match_is_kept_when_the_check_is_run_again(self):
+        ledger_row = dict(zip(LEDGER_COLUMNS, [
+            "2026-05-01", "山田太郎", "やまだたろう", "1990-01-01", "匿名住所", "000",
+            "テストカード", "2", "10000", "20000", "",
+        ]))
+        self.app.import_ledger(self.write_ledger(ledger_row))
+        comparison_id = self.app.import_comparison(
+            self.write_comparison(["2026-05-01", "テストカード", 2, "山田太郎", 20000], ["2026-06-01", 2])
+        )
+        first = self.app.allocate(comparison_id)
+        self.assertEqual("matched", first[0]["status"])
+        matched_id = first[0]["ledger_record_id"]
+
+        # an identical-looking record shows up later; the row must not turn ambiguous
+        second_path = self.root / "ledger_second.csv"
+        with second_path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            writer.writerow({**ledger_row, "名前": "山田太郎"})
+        self.app.import_ledger(second_path)
+
+        again = self.app.allocate(comparison_id)
+
+        self.assertEqual("matched", again[0]["status"])
+        self.assertEqual(matched_id, again[0]["ledger_record_id"])
+
     def test_ledger_record_is_not_reused_for_two_sales(self):
         ledger_row = dict(zip(LEDGER_COLUMNS, [
             "2026-05-01", "山田太郎", "やまだたろう", "1990-01-01", "匿名住所", "000",
@@ -1556,6 +1582,34 @@ class FillComparisonPurchaseFromLedgerTests(unittest.TestCase):
         self.assertEqual(2, by_row[4][14])
         self.assertAlmostEqual(3000, by_row[3][15] + by_row[4][15], places=2)
 
+    def test_a_matched_ledger_record_stays_used_after_the_ledger_is_merged_again(self):
+        # 古物台帳は取り込むたびに結合し直され記録のIDが変わる。一度マッチした記録が、
+        # 結合し直した後に別の行へ再びマッチしてはいけない。
+        ledger_id = self.app.import_ledger(self.write_ledger([
+            ["2026-05-01", "客A", "", "", "", "", "特定カードG", "1", "400", "400", ""],
+        ]))
+        self.app.merge_ledger_imports([ledger_id])
+        comparison_id = self.app.import_comparison(self.write_comparison_xlsx([
+            ("買受", "カテゴリ", "特定カードG", "2026-06-03", 1000, 1, 1000, "海外客1"),
+            ("買受", "カテゴリ", "特定カードG", "2026-06-04", 1000, 1, 1000, "海外客2"),
+        ]))
+        self.assertEqual({"filled": 1, "not_found": 1, "split": 0}, self.app.fill_comparison_purchase_from_ledger())
+
+        other_id = self.app.import_ledger(self.write_ledger([
+            ["2026-05-09", "客Z", "", "", "", "", "別のカードH", "1", "100", "100", ""],
+        ], name="ledger2.csv"))
+        self.app.merge_ledger_imports([ledger_id, other_id])   # new merged import -> new record ids
+
+        result = self.app.fill_comparison_purchase_from_ledger()
+
+        self.assertEqual(0, result["filled"])
+        records, _ = self.app.get_records(comparison_id)
+        by_row = {r["row_no"]: r["data"]["values"] for r in records}
+        self.assertEqual("客A", by_row[3][9])
+        self.assertIn(by_row[4][0], (None, ""))
+        results, _ = self.app.search_ledger("特定カードG")
+        self.assertEqual([], results)   # the matched record is not offered in search either
+
     def test_does_not_reuse_a_ledger_record_across_two_sales(self):
         ledger_id = self.app.import_ledger(self.write_ledger([
             ["2026-05-01", "客A", "きゃくえー", "1990-01-01", "住所A", "000", "特定カードB", "1", "1000", "1000", ""],
@@ -1992,6 +2046,55 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
         records, _ = self.app.get_records(comparison_id)
         values = records[0]["data"]["values"]
         self.assertIsNone(values[10])  # 備考 cleared
+
+    def test_proration_cannot_exceed_the_original_purchase_amount(self):
+        ledger_id = self.app.import_ledger(self.write_ledger([
+            ["2026-05-01", "箱売り太郎", "はこうりたろう", "1990-01-01", "住所", "000",
+             "未開封BOX ワンピースカード OP-01", "1", "50000", "50000", ""],
+        ]))
+        self.app.merge_ledger_imports([ledger_id])
+        comparison_id = self.app.import_comparison(self.write_comparison_xlsx([
+            ("カードA", "2026-06-03", 3000, "海外客1"),
+            ("カードB", "2026-06-04", 2000, "海外客2"),
+            ("カードC", "2026-06-05", 2000, "海外客3"),
+        ]))
+        results, _ = self.app.search_ledger("未開封BOX")
+        box_id = results[0]["id"]
+        self.assertEqual(0, results[0]["used_amount"])
+
+        self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 3, box_id, qty=1, amount=30000)
+
+        usage = self.app.ledger_record_usage(box_id)
+        self.assertEqual({"amount": 50000, "used_amount": 30000, "consumed": False, "remaining": 20000}, usage)
+        results, _ = self.app.search_ledger("未開封BOX")
+        self.assertEqual([30000, 20000], [results[0]["used_amount"], results[0]["remaining"]])
+        with self.assertRaises(ValueError) as ctx:
+            self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 4, box_id, qty=1, amount=25000)
+        self.assertIn("残り20000円", str(ctx.exception))
+
+        self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 4, box_id, qty=1, amount=20000)
+
+        # fully used: not offered in search any more, and further linking is refused
+        self.assertEqual([], self.app.search_ledger("未開封BOX")[0])
+        with self.assertRaises(ValueError):
+            self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 5, box_id, qty=1, amount=100)
+
+    def test_a_record_matched_automatically_cannot_be_linked_or_found_again(self):
+        ledger_id = self.app.import_ledger(self.write_ledger([
+            ["2026-05-01", "客A", "", "", "", "", "特定カードZ", "1", "400", "400", ""],
+        ]))
+        self.app.merge_ledger_imports([ledger_id])
+        results, _ = self.app.search_ledger("特定カードZ")
+        record_id = results[0]["id"]
+        comparison_id = self.app.import_comparison(self.write_comparison_xlsx([
+            ("特定カードZ", "2026-06-03", 1000, "海外客1"),
+            ("別のカード", "2026-06-04", 1000, "海外客2"),
+        ]))
+        self.assertEqual(1, self.app.fill_comparison_purchase_from_ledger()["filled"])
+
+        self.assertEqual([], self.app.search_ledger("特定カードZ")[0])
+        with self.assertRaises(ValueError):
+            self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 4, record_id, qty=1, amount=100)
 
     def test_search_ledger_caps_results_and_reports_total_match_count(self):
         # a common card can have far more than 30 unconsumed purchase records; the total

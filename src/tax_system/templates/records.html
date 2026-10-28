@@ -167,7 +167,7 @@
     見つからない場合は、氏名で検索してください。過去に仕入れたが
     まだ商品名を明細登録していない古物台帳（商品名が空欄の行）も、氏名でなら見つかります。
     その行に紐づけると、この売上の商品が古物台帳側の「内訳確定」画面にも自動で反映されます。<br>
-    検索結果には、自動一致や他の売上への手動紐づけで既に使用済みの古物台帳は出てきません。<br>
+    検索結果には、自動一致や他の売上への手動紐づけで既に使用済みの古物台帳、案分で金額を使い切った古物台帳は出てきません。案分では、1件の古物台帳から案分した合計が元の仕入金額を超えないようにチェックし、案分済みの金額と残りを表示します。<br>
     一致件数が多いカードは、仕入日が古い順に最大30件だけ表示します（先入れ先出し）。
     特定の仕入年月に絞りたいときは、下の「仕入年月」も入力してください。
   </p>
@@ -204,9 +204,10 @@
         <input type="hidden" name="sheet" value="{{ sheet }}">
         <input type="hidden" name="row_no" value="{{ row_no }}">
         <input type="hidden" name="ledger_record_id" value="{{ r.id }}">
-        <span style="flex:1;">{{ r.name }} / {{ r.product or "（商品名未登録）" }} / {{ r.date }} / 仕入合計{{ r.amount | num }}円</span>
+        <span style="flex:1;">{{ r.name }} / {{ r.product or "（商品名未登録）" }} / {{ r.date }} / 仕入合計{{ r.amount | num }}円
+          {% if r.used_amount %}<strong>（案分済み {{ r.used_amount | num }}円 ／ 残り {{ r.remaining | num if r.remaining is not none else "-" }}円）</strong>{% endif %}</span>
         <label>数量 <input type="number" name="qty" step="any" min="0" value="{{ purchase_shortfall.shortfall | num if purchase_shortfall else 1 }}" required style="width:5em;"></label>
-        <label>案分金額 <input type="number" name="amount" step="any" min="0" required style="width:8em;"></label>
+        <label>{{ "金額（上限 " ~ (r.remaining | num) ~ "円）" if r.remaining is not none else "案分金額" }} <input type="number" name="amount" step="any" min="0"{% if r.remaining is not none %} max="{{ r.remaining }}"{% endif %} required style="width:8em;"></label>
         <button type="submit" class="button small">{{ "不足分を別の行として紐づける" if purchase_shortfall else "この仕入に紐づける" }}</button>
       </form>
       {% endfor %}
