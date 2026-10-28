@@ -143,6 +143,35 @@ def find_exact_ledger_item_match(remainder: float, sell_prices: dict[str, float]
     return None
 
 
+def split_comparison_sale_side(values: list[Any], headers: list[str], split: int,
+                               part_qtys: list[float]) -> list[list[Any]]:
+    """相対表の1行（values）の販売側を、数量part_qtysで按分した複数行分のvaluesに分ける。
+    販売側の数量は各partの数量に、販売側の「代価」を含む列（円・HKDなど）は数量の比率で
+    按分する（端数は最後のpartに寄せて、合計が元の金額と一致するようにする）。仕入側は
+    そのままコピーするので、呼び出し側で書き換える。
+    """
+    sale_headers = headers[split:]
+    qty_idx = _index_of(sale_headers, "数量")
+    total_qty = sum(part_qtys)
+    amount_idxs = [split + i for i, h in enumerate(sale_headers) if h and "代価" in h]
+    parts = [list(values) for _ in part_qtys]
+    for idx in amount_idxs:
+        total = _to_number(values[idx])
+        if total is None:
+            continue
+        allocated = 0.0
+        for n, (part, part_qty) in enumerate(zip(parts, part_qtys)):
+            if n == len(parts) - 1:
+                part[idx] = round(total - allocated, 2)
+            else:
+                part[idx] = round(total * part_qty / total_qty, 2)
+                allocated += part[idx]
+    if qty_idx is not None:
+        for part, part_qty in zip(parts, part_qtys):
+            part[split + qty_idx] = part_qty
+    return parts
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -1380,18 +1409,10 @@ class TaxSystem:
                     "追加する数量は、販売数量より小さい値にしてください（販売数量を超える場合は、"
                     "販売側を先に修正してください）"
                 )
-            ratio = qty / sale_qty
-            new_values = list(values)
+            original_values, new_values = split_comparison_sale_side(
+                values, headers, split, [sale_qty - qty, qty])
             write_purchase(new_values)
-            sale_amount_idxs = [split + i for i, h in enumerate(sale_headers) if h and "代価" in h]
-            for i in sale_amount_idxs:
-                amount_value = _to_number(values[i])
-                if amount_value is not None:
-                    new_values[i] = round(amount_value * ratio, 2)
-                    values[i] = round(amount_value * (1 - ratio), 2)
-            new_values[split + sale_qty_idx] = qty
-            values[split + sale_qty_idx] = sale_qty - qty
-            data["values"] = values
+            data["values"] = original_values
             new_data = {**data, "values": new_values}
             with closing(self.connect()) as db, db:
                 target_row_no = db.execute(
@@ -2265,8 +2286,14 @@ class TaxSystem:
         not_found = 0
         now = datetime.now().isoformat(timespec="seconds")
         updates: list[tuple[str, int, str, int]] = []
+        inserts: list[tuple[int, str, int, str]] = []
         allocation_rows: list[tuple[Any, ...]] = []
         metadata_cache: dict[int, dict[str, Any]] = {}
+        split_rows = 0
+        next_row_no: dict[tuple[int, str], int] = {}
+        for row in comparison_rows:
+            key = (row["import_id"], row["sheet_name"])
+            next_row_no[key] = max(next_row_no.get(key, 0), row["row_no"])
 
         for row in comparison_rows:
             metadata = metadata_cache.setdefault(row["import_id"], json.loads(row["metadata_json"]))
@@ -2309,8 +2336,6 @@ class TaxSystem:
             if not candidates:
                 not_found += 1
                 continue
-            match = candidates[0]
-            consumed.add(match["id"])
 
             qty_idx = _index_of(purchase_headers, "数量")
             unit_idx = _index_of(purchase_headers, "単価", contains=True)
@@ -2318,25 +2343,81 @@ class TaxSystem:
             name_idx = _index_of(purchase_headers, "相手方名")
             note_idx = _index_of(purchase_headers, "備考")
 
-            values[0] = match["date"]
-            if qty_idx is not None: values[qty_idx] = match["qty"]
-            if unit_idx is not None: values[unit_idx] = match["unit"]
-            if amount_idx is not None: values[amount_idx] = match["amount"]
-            if name_idx is not None: values[name_idx] = match["name"]
-            if note_idx is not None and values[note_idx] in (None, "") and match["note"]:
-                values[note_idx] = match["note"]
+            def fill_from(target: list[Any], match: dict[str, Any]) -> None:
+                target[0] = match["date"]
+                if qty_idx is not None: target[qty_idx] = match["qty"]
+                if unit_idx is not None: target[unit_idx] = match["unit"]
+                if amount_idx is not None: target[amount_idx] = match["amount"]
+                if name_idx is not None: target[name_idx] = match["name"]
+                if note_idx is not None and target[note_idx] in (None, "") and match["note"]:
+                    target[note_idx] = match["note"]
 
-            data["values"] = values
-            updates.append((json_text(data), row["import_id"], row["sheet_name"], row["row_no"]))
-            allocation_rows.append((
-                row["import_id"], row["sheet_name"], row["row_no"], match["id"], "matched", "[]", None, now,
-            ))
-            filled += 1
+            # 1行=仕入1件・販売1件でしか表せないため、販売数量が1件の古物台帳の数量を超える場合
+            # （2名から買い取って1名に売った場合など）は、先入れ先出しで古物台帳を複数件使い、
+            # 件数分に行を分割して按分する。販売数量に届かない分は、仕入側が空欄の行として残す。
+            sale_qty_idx = _index_of(headers[split:], "数量")
+            sale_qty = _to_number(sale_values[sale_qty_idx]) if sale_qty_idx is not None else None
+            chosen = [candidates[0]]
+            part_qtys: list[float] = []
+            if sale_qty and sale_qty > 0 and (chosen[0]["qty"] or 0) > 0 and chosen[0]["qty"] < sale_qty:
+                covered = chosen[0]["qty"]
+                for extra in candidates[1:]:
+                    if covered >= sale_qty:
+                        break
+                    if not extra["qty"] or extra["qty"] <= 0:
+                        continue
+                    chosen.append(extra)
+                    covered += extra["qty"]
+                remaining = sale_qty
+                for match in chosen:
+                    take = min(match["qty"], remaining)
+                    part_qtys.append(take)
+                    remaining -= take
+                if remaining > 0:
+                    part_qtys.append(remaining)  # no purchase found for this part yet
+
+            if not part_qtys:
+                match = chosen[0]
+                consumed.add(match["id"])
+                fill_from(values, match)
+                data["values"] = values
+                updates.append((json_text(data), row["import_id"], row["sheet_name"], row["row_no"]))
+                allocation_rows.append((
+                    row["import_id"], row["sheet_name"], row["row_no"], match["id"], "matched", "[]", None, now,
+                ))
+                filled += 1
+                continue
+
+            parts = split_comparison_sale_side(values, headers, split, part_qtys)
+            for n, part_values in enumerate(parts):
+                match = chosen[n] if n < len(chosen) else None
+                if match:
+                    consumed.add(match["id"])
+                    fill_from(part_values, match)
+                if n == 0:
+                    target_row_no = row["row_no"]
+                    updates.append((json_text({**data, "values": part_values}), row["import_id"],
+                                    row["sheet_name"], target_row_no))
+                else:
+                    key = (row["import_id"], row["sheet_name"])
+                    next_row_no[key] += 1
+                    target_row_no = next_row_no[key]
+                    inserts.append((row["import_id"], row["sheet_name"], target_row_no,
+                                    json_text({**data, "values": part_values})))
+                if match:
+                    allocation_rows.append((
+                        row["import_id"], row["sheet_name"], target_row_no, match["id"], "matched", "[]", None, now,
+                    ))
+                    filled += 1
+            split_rows += len(parts) - 1
 
         if updates:
             with closing(self.connect()) as db, db:
                 db.executemany(
                     "UPDATE records SET data_json=? WHERE import_id=? AND sheet_name=? AND row_no=?", updates,
+                )
+                db.executemany(
+                    "INSERT INTO records(import_id, sheet_name, row_no, data_json) VALUES(?,?,?,?)", inserts,
                 )
                 db.executemany(
                     """INSERT INTO allocations(sale_import_id, sale_sheet, sale_row_no, ledger_record_id, status, candidates_json, note, created_at)
@@ -2347,7 +2428,7 @@ class TaxSystem:
                     """,
                     allocation_rows,
                 )
-        return {"filled": filled, "not_found": not_found}
+        return {"filled": filled, "not_found": not_found, "split": split_rows}
 
     def _comparison_records_for_month(self, month: str) -> list[sqlite3.Row]:
         sheet_headers_by_import = self._comparison_sheet_headers_by_import()

@@ -1511,6 +1511,51 @@ class FillComparisonPurchaseFromLedgerTests(unittest.TestCase):
         self.assertEqual("下置 誠龍", values[9])  # 相手方名
         self.assertEqual("元の備考", values[10])  # 備考
 
+    def test_splits_the_sale_across_two_ledger_purchases_when_quantity_exceeds_one_record(self):
+        # 2名から1個ずつ買い取り、1名に2個売った: 相対表は1行=仕入1件・販売1件なので、
+        # 古物台帳の2件を先入れ先出しで使って行を2つに分割し、販売数量・代価を按分する。
+        ledger_id = self.app.import_ledger(self.write_ledger([
+            ["2026-05-01", "客A", "", "", "", "", "特定カードE", "1", "400", "400", ""],
+            ["2026-05-02", "客B", "", "", "", "", "特定カードE", "1", "500", "500", ""],
+        ]))
+        self.app.merge_ledger_imports([ledger_id])
+        comparison_id = self.app.import_comparison(self.write_comparison_xlsx([
+            ("買受", "カテゴリ", "特定カードE", "2026-06-03", 8980, 2, 17960, "海外客"),
+        ]))
+
+        result = self.app.fill_comparison_purchase_from_ledger()
+
+        self.assertEqual({"filled": 2, "not_found": 0, "split": 1}, result)
+        records, _ = self.app.get_records(comparison_id)
+        by_row = {r["row_no"]: r["data"]["values"] for r in records}
+        self.assertEqual(2, len(by_row))
+        first, second = by_row[3], by_row[4]
+        self.assertEqual(["客A", "客B"], [first[9], second[9]])
+        self.assertEqual([400, 500], [first[7], second[7]])
+        self.assertEqual([1, 1], [first[14], second[14]])            # sale 数量 split 2 -> 1 + 1
+        self.assertAlmostEqual(17960, first[15] + second[15], places=2)
+        self.assertEqual(["海外客", "海外客"], [first[16], second[16]])
+        self.assertEqual([], self.app.validate_comparison_month("2026-06"))
+
+    def test_leaves_a_blank_row_for_the_part_of_the_sale_with_no_purchase_found_yet(self):
+        ledger_id = self.app.import_ledger(self.write_ledger([
+            ["2026-05-01", "客A", "", "", "", "", "特定カードF", "1", "400", "400", ""],
+        ]))
+        self.app.merge_ledger_imports([ledger_id])
+        comparison_id = self.app.import_comparison(self.write_comparison_xlsx([
+            ("買受", "カテゴリ", "特定カードF", "2026-06-03", 1000, 3, 3000, "海外客"),
+        ]))
+
+        result = self.app.fill_comparison_purchase_from_ledger()
+
+        self.assertEqual(1, result["filled"])
+        records, _ = self.app.get_records(comparison_id)
+        by_row = {r["row_no"]: r["data"]["values"] for r in records}
+        self.assertEqual(["客A", 1, 1], [by_row[3][9], by_row[3][6], by_row[3][14]])
+        self.assertIn(by_row[4][0], (None, ""))                       # remainder: purchase still blank
+        self.assertEqual(2, by_row[4][14])
+        self.assertAlmostEqual(3000, by_row[3][15] + by_row[4][15], places=2)
+
     def test_does_not_reuse_a_ledger_record_across_two_sales(self):
         ledger_id = self.app.import_ledger(self.write_ledger([
             ["2026-05-01", "客A", "きゃくえー", "1990-01-01", "住所A", "000", "特定カードB", "1", "1000", "1000", ""],

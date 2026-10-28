@@ -163,7 +163,9 @@ def create_app(home: str | Path | None = None) -> Flask:
         if result["filled"]:
             flash(
                 f"古物台帳から仕入側を{result['filled']}件埋めました"
-                f"（一致する古物台帳が見つからなかったのは{result['not_found']}件です）", "success",
+                + (f"（販売数量が1件の仕入を超える{result['split']}件は、行を分割して複数の仕入に対応付けました）"
+                   if result.get("split") else "")
+                + f"（一致する古物台帳が見つからなかったのは{result['not_found']}件です）", "success",
             )
         else:
             flash(f"埋められる行はありませんでした（{result['not_found']}件は一致する古物台帳が見つかりませんでした）", "success")
