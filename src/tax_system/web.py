@@ -367,11 +367,13 @@ def create_app(home: str | Path | None = None) -> Flask:
         try:
             qty = float(request.form["qty"])
             amount = float(request.form["amount"])
-            ts.link_comparison_purchase_manually(import_id, sheet, row_no, ledger_record_id, qty, amount)
+            new_row_no = ts.link_comparison_purchase_manually(import_id, sheet, row_no, ledger_record_id, qty, amount)
         except (ValueError, TypeError) as exc:
             flash(f"紐づけに失敗しました: {exc}", "error")
         else:
-            flash("古物台帳の記録を手動で紐づけました", "success")
+            flash(
+                f"この行を2行に分割し、新しい行（{new_row_no}行目）に仕入を紐づけました"
+                if new_row_no != row_no else "古物台帳の記録を手動で紐づけました", "success")
         return redirect(url_for("records_view", import_id=import_id, sheet=sheet, row_no=row_no))
 
     @app.route("/comparison/link-purchase-freeform", methods=["POST"])
@@ -386,11 +388,14 @@ def create_app(home: str | Path | None = None) -> Flask:
         try:
             qty = float(request.form["qty"])
             amount = float(request.form["amount"])
-            ts.add_comparison_purchase_freeform(import_id, sheet, row_no, vendor, purchase_date, qty, amount, note)
+            new_row_no = ts.add_comparison_purchase_freeform(
+                import_id, sheet, row_no, vendor, purchase_date, qty, amount, note)
         except (ValueError, TypeError) as exc:
             flash(f"入力に失敗しました: {exc}", "error")
         else:
-            flash("仕入を手動入力しました", "success")
+            flash(
+                f"この行を2行に分割し、新しい行（{new_row_no}行目）に仕入を入力しました"
+                if new_row_no != row_no else "仕入を手動入力しました", "success")
         return redirect(url_for("records_view", import_id=import_id, sheet=sheet, row_no=row_no))
 
     @app.route("/comparison/edit-purchase", methods=["POST"])

@@ -147,8 +147,10 @@
     この行は仕入数量（{{ purchase_shortfall.purchase_qty | num }}）が販売数量
     （{{ purchase_shortfall.sale_qty | num }}）より少なく、不足分
     {{ purchase_shortfall.shortfall | num }}が別の仕入からのものである可能性があります。
-    下から古物台帳を検索し、不足分を紐づけてください。追加すると、既存の仕入数量・金額に
-    合算されます（仕入年月日・相手方名は既存のまま残ります）。
+    2名から買い取って1名に売った場合などは、下から古物台帳を検索して不足分の仕入を紐づけてください。
+    相対表は1行につき仕入1件・販売1件でしか表せないため、紐づけると<strong>この行が2行に分割</strong>され
+    （販売の数量・代価は数量で按分、新しい行は一覧の最後に追加）、新しい行に今回の仕入が入ります。
+    この行の仕入はそのまま残ります。
   </p>
   {% else %}
   <h2>古物台帳から手動で仕入を紐づける</h2>
@@ -205,7 +207,7 @@
         <span style="flex:1;">{{ r.name }} / {{ r.product or "（商品名未登録）" }} / {{ r.date }} / 仕入合計{{ r.amount | num }}円</span>
         <label>数量 <input type="number" name="qty" step="any" min="0" value="{{ purchase_shortfall.shortfall | num if purchase_shortfall else 1 }}" required style="width:5em;"></label>
         <label>案分金額 <input type="number" name="amount" step="any" min="0" required style="width:8em;"></label>
-        <button type="submit" class="button small">{{ "不足分として紐づける" if purchase_shortfall else "この仕入に紐づける" }}</button>
+        <button type="submit" class="button small">{{ "不足分を別の行として紐づける" if purchase_shortfall else "この仕入に紐づける" }}</button>
       </form>
       {% endfor %}
     </div>
@@ -229,7 +231,7 @@
     <label>数量 <input type="number" name="qty" step="any" min="0" value="{{ purchase_shortfall.shortfall | num if purchase_shortfall else 1 }}" required style="width:5em;"></label>
     <label>金額 <input type="number" name="amount" step="any" min="0" required style="width:8em;"></label>
     <label>備考（任意） <input type="text" name="note" style="width:12em;"></label>
-    <button type="submit" class="button small">{{ "不足分として直接入力" if purchase_shortfall else "この内容で仕入を登録" }}</button>
+    <button type="submit" class="button small">{{ "不足分を別の行として直接入力" if purchase_shortfall else "この内容で仕入を登録" }}</button>
   </form>
 </section>
 {% endif %}

@@ -1790,8 +1790,9 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
         self.assertEqual({"purchase_qty": 3, "sale_qty": 13, "shortfall": 10}, shortfall)
 
     def test_links_additional_purchase_to_a_row_with_a_quantity_shortfall(self):
-        # purchase side already has 3 units from 三浦俊介; sale side sold 13, so 10 are
-        # missing - link_comparison_purchase_manually should top up rather than overwrite.
+        # 2名から買い取って1名に売るケース: 相対表は1行=仕入1件・販売1件なので、既に仕入が
+        # 入っている行(3個を三浦俊介から)にさらに10個を別の仕入先から紐づけると、行を
+        # 販売数量(13)で3個/10個に分割する(合算はしない)。
         comparison_id = self.app.import_comparison(self.write_comparison_with_partial_purchase())
 
         ledger_id = self.app.import_ledger(self.write_ledger([
@@ -1800,18 +1801,40 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
         records, _ = self.app.get_records(ledger_id)
         ledger_record_id = records[0]["id"]
 
-        self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 3, ledger_record_id, qty=10, amount=8000)
+        new_row_no = self.app.link_comparison_purchase_manually(
+            comparison_id, "輸出販売", 3, ledger_record_id, qty=10, amount=8000)
 
+        self.assertEqual(4, new_row_no)
         records, _ = self.app.get_records(comparison_id)
-        values = records[0]["data"]["values"]
-        self.assertEqual("2026-05-14", str(values[0]))  # date unchanged
-        self.assertEqual("三浦俊介", values[9])           # vendor unchanged
-        self.assertEqual(13, values[6])                  # qty: 3 existing + 10 added
-        self.assertEqual(8600, values[7])                # amount: 600 existing + 8000 added
-        self.assertIn("不足分", values[10])
-        self.assertIn("元の備考", values[10])
-
+        by_row = {r["row_no"]: r["data"]["values"] for r in records}
+        original, added = by_row[3], by_row[new_row_no]
+        # original row: still the first purchase, sale reduced to the 3 units it covers
+        self.assertEqual("三浦俊介", original[9])
+        self.assertEqual(3, original[6])
+        self.assertEqual(600, original[7])
+        self.assertEqual(3, original[14])                      # sale 数量 13 -> 3
+        self.assertAlmostEqual(15340 * 3 / 13, original[15], places=2)
+        # new row: the second purchase, sale 10 units, same buyer/date
+        self.assertEqual("別の仕入先", added[9])
+        self.assertEqual("2026-06-01", str(added[0]))
+        self.assertEqual(10, added[6])
+        self.assertEqual(8000, added[7])
+        self.assertEqual(800, added[5])
+        self.assertEqual(10, added[14])
+        self.assertAlmostEqual(15340 * 10 / 13, added[15], places=2)
+        self.assertEqual("Vincent song", added[16])
+        self.assertEqual("2026-07-01", str(added[11]))
+        # sale amounts add back up to the original total, and nothing is short anymore
+        self.assertAlmostEqual(15340, original[15] + added[15], places=2)
         self.assertIsNone(self.app.comparison_purchase_shortfall(comparison_id, "輸出販売", 3))
+        self.assertIsNone(self.app.comparison_purchase_shortfall(comparison_id, "輸出販売", new_row_no))
+
+    def test_adding_a_purchase_as_large_as_the_whole_sale_is_rejected(self):
+        comparison_id = self.app.import_comparison(self.write_comparison_with_partial_purchase())
+        with self.assertRaises(ValueError):
+            self.app.add_comparison_purchase_freeform(
+                comparison_id, "輸出販売", 3, vendor="別の仕入先", purchase_date="2026-06-01", qty=13, amount=3000,
+            )
 
     def test_freeform_fills_a_blank_purchase_side_without_a_ledger_record(self):
         comparison_id = self.app.import_comparison(self.write_comparison_xlsx([
@@ -1845,21 +1868,20 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
                 comparison_id, "輸出販売", 3, vendor="山田太郎", purchase_date="not-a-date", qty=1, amount=1500,
             )
 
-    def test_freeform_tops_up_a_row_with_a_quantity_shortfall(self):
+    def test_freeform_splits_a_row_that_already_has_a_purchase(self):
         comparison_id = self.app.import_comparison(self.write_comparison_with_partial_purchase())
 
-        self.app.add_comparison_purchase_freeform(
+        new_row_no = self.app.add_comparison_purchase_freeform(
             comparison_id, "輸出販売", 3, vendor="別の仕入先", purchase_date="2026-06-01", qty=10, amount=3000,
         )
 
         records, _ = self.app.get_records(comparison_id)
-        values = records[0]["data"]["values"]
-        self.assertEqual("2026-05-14", str(values[0]))  # original date unchanged
-        self.assertEqual("三浦俊介", values[9])           # original vendor unchanged
-        self.assertEqual(13, values[6])
-        self.assertEqual(3600, values[7])
-        self.assertIn("不足分", values[10])
-        self.assertIn("元の備考", values[10])
+        by_row = {r["row_no"]: r["data"]["values"] for r in records}
+        self.assertEqual("三浦俊介", by_row[3][9])
+        self.assertEqual(3, by_row[3][14])
+        self.assertEqual("別の仕入先", by_row[new_row_no][9])
+        self.assertEqual(10, by_row[new_row_no][14])
+        self.assertIn("別の仕入先", by_row[new_row_no][10])
         self.assertIsNone(self.app.comparison_purchase_shortfall(comparison_id, "輸出販売", 3))
 
     def test_get_comparison_purchase_fields_returns_current_values(self):
