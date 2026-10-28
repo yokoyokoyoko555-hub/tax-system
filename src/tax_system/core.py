@@ -1126,6 +1126,12 @@ class TaxSystem:
                 "amount": _to_number(data.get("金額")),
             }
 
+        # 相対表の1行ごとに古物台帳の全件（数十万件）を走査すると極端に遅くなるため、
+        # 商品名ごとに先に振り分けておく（走査する順序・結果は変わらない）。
+        ledger_by_product: dict[str, list[dict[str, Any]]] = {}
+        for entry in ledger_by_id.values():
+            ledger_by_product.setdefault(entry["product"], []).append(entry)
+
         consumed = set(other_consumed)
         for row in existing.values():
             if row["status"] == "manual" and row["ledger_record_id"] is not None:
@@ -1166,7 +1172,9 @@ class TaxSystem:
             counterparty = str(purchase[name_idx]).strip() if name_idx is not None and purchase[name_idx] not in (None, "") else None
             amount = _to_number(purchase[amount_idx]) if amount_idx is not None else None
 
-            candidates = [c for c in ledger_by_id.values() if c["id"] not in consumed and product and c["product"] == product]
+            candidates = (
+                [c for c in ledger_by_product.get(product, []) if c["id"] not in consumed] if product else []
+            )
             strict = [c for c in candidates if c["qty"] == qty and c["date"] == purchase_date]
             pool = strict or candidates
             if counterparty:
