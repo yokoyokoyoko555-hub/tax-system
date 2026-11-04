@@ -4,6 +4,7 @@ import csv
 import hashlib
 import json
 import os
+import random
 import re
 import shutil
 import sqlite3
@@ -122,7 +123,7 @@ def suggest_ledger_items(remainder: float, sell_prices: dict[str, float]) -> lis
 
 
 def find_exact_ledger_item_match(remainder: float, sell_prices: dict[str, float],
-                                 max_qty: int = 60) -> dict[str, Any] | None:
+                                 max_qty: int = 60, rng: random.Random | None = None) -> dict[str, Any] | None:
     """残額を、期末在庫表の商品1種類×数量でぴったり説明できる組み合わせを機械的に探す。
     相場もの（トレーディングカードなど）は同じ商品でも買取額が毎回変わり、単価は固定値
     ではなく販売価格の50〜90%という幅で扱ってよく、数量も1枚に限らず何枚でもよいため、
@@ -134,12 +135,52 @@ def find_exact_ledger_item_match(remainder: float, sell_prices: dict[str, float]
         return None
     for qty in range(1, max_qty + 1):
         target_unit = remainder / qty
-        for product, price in sell_prices.items():
-            low, high = price * 0.5, price * 0.9
-            if low - 0.01 <= target_unit <= high + 0.01:
-                unit_price = min(max(target_unit, low), high)
-                return {"product": product, "qty": qty, "unit_cost": round(unit_price, 2),
-                        "amount": round(unit_price * qty, 2)}
+        matches = [
+            product for product, price in sell_prices.items()
+            if price * 0.5 - 0.01 <= target_unit <= price * 0.9 + 0.01
+        ]
+        if matches:
+            # rngを渡すと、その数量で合う商品の中からランダムに選ぶ（毎回同じ商品に偏らない）
+            product = rng.choice(matches) if rng else matches[0]
+            price = sell_prices[product]
+            unit_price = min(max(target_unit, price * 0.5), price * 0.9)
+            return {"product": product, "qty": qty, "unit_cost": round(unit_price, 2),
+                    "amount": round(unit_price * qty, 2)}
+    return None
+
+
+def build_random_ledger_breakdown(remainder: float, sell_prices: dict[str, float],
+                                  rng: random.Random | None = None, max_qty: int = 60) -> list[dict[str, Any]] | None:
+    """残額を期末在庫表の商品で埋める内訳を、ランダムに作る。商品名は期末在庫表にある名前だけを
+    使い、各商品の単価は販売価格の50〜90%の範囲に収める。合計は残額と一致させる。
+    まず商品1種類×数量でぴったり合う組み合わせ（find_exact_ledger_item_match）を探し、
+    無ければランダムな商品を最大単価（90%）で何枚か入れ、残りの端数を細かい（安い）カードで
+    調整する。どうしても作れなければNoneを返す。
+    """
+    rng = rng or random.Random()
+    if not sell_prices or remainder is None or remainder <= 0:
+        return None
+    exact = find_exact_ledger_item_match(remainder, sell_prices, max_qty=max_qty, rng=rng)
+    if exact:
+        return [exact]
+    cheap_prices = dict(sorted(sell_prices.items(), key=lambda kv: kv[1])[:300])
+    products = list(sell_prices)
+    for _ in range(40):
+        product = rng.choice(products)
+        high = sell_prices[product] * 0.9
+        if high >= remainder or high <= 0:
+            continue
+        qty = int(remainder // high)
+        main_total = round(high * qty, 2)
+        leftover = round(remainder - main_total, 2)
+        if leftover < 0.5:
+            return [{"product": product, "qty": qty, "unit_cost": round(high, 2), "amount": main_total}]
+        filler = find_exact_ledger_item_match(leftover, cheap_prices, max_qty=max_qty, rng=rng)
+        if filler and filler["product"] != product:
+            return [
+                {"product": product, "qty": qty, "unit_cost": round(high, 2), "amount": main_total},
+                filler,
+            ]
     return None
 
 
@@ -1993,14 +2034,17 @@ class TaxSystem:
         with closing(self.connect()) as db, db:
             db.execute("DELETE FROM ledger_items WHERE id=? AND source='manual'", (item_id,))
 
-    def complete_ledger_breakdown_for_month(self, ledger_import_id: int, month: str) -> dict[str, int]:
+    def complete_ledger_breakdown_for_month(self, ledger_import_id: int, month: str,
+                                            rng: random.Random | None = None) -> dict[str, int]:
         """指定した仕入年月の、内訳がまだ合計と一致していない古物台帳の行すべてに、期末在庫表の
-        商品から残額にぴったり合う内訳を機械的に入れる（find_exact_ledger_item_match）。
-        商品名は期末在庫表（その月以前）にある名前をそのまま使い、AIは使わないので、新しい
-        表現や存在しない商品名は作らない。残額がマイナス（すでに内訳が合計を超えている）の行、
-        期末在庫表が無い行、ぴったり合う商品が見つからない行は触らず、件数だけ返す。
+        商品から、合計が残額と一致する内訳をランダムに入れる（build_random_ledger_breakdown。
+        商品1種類でぴったり合わなければ、端数を細かいカードで調整する）。商品名は期末在庫表
+        （その月以前）にある名前をそのまま使い、AIは使わないので、新しい表現や存在しない商品名は
+        作らない。残額がマイナス（すでに内訳が合計を超えている）の行、期末在庫表が無い行、
+        内訳を作れなかった行は触らず、件数だけ返す。
         """
         added = no_match = negative = no_inventory = 0
+        rng = rng or random.Random()
         prices_cache: dict[str | None, dict[str, float]] = {}
         for entry in self.propose_ledger_breakdown(ledger_import_id, month=month):
             if entry["resolved"] or entry["remainder"] is None:
@@ -2014,12 +2058,13 @@ class TaxSystem:
             row_month = entry["month"]
             if row_month not in prices_cache:
                 prices_cache[row_month] = self._inventory_sell_prices_for_month(row_month)
-            match = find_exact_ledger_item_match(entry["remainder"], prices_cache[row_month])
-            if not match:
+            items = build_random_ledger_breakdown(entry["remainder"], prices_cache[row_month], rng=rng)
+            if not items:
                 no_match += 1
                 continue
-            self.add_ledger_item(ledger_import_id, entry["row_no"], match["product"], match["qty"],
-                                 unit_cost=match["unit_cost"])
+            for item in items:
+                self.add_ledger_item(ledger_import_id, entry["row_no"], item["product"], item["qty"],
+                                     unit_cost=item["unit_cost"])
             added += 1
         return {"added": added, "no_match": no_match, "negative": negative, "no_inventory": no_inventory}
 

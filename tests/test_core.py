@@ -17,6 +17,7 @@ from tax_system.core import (
     LEDGER_POS_COLUMNS,
     TaxSystem,
     _to_date,
+    build_random_ledger_breakdown,
     find_exact_ledger_item_match,
     suggest_ledger_items,
 )
@@ -1217,6 +1218,36 @@ class FindExactLedgerItemMatchTests(unittest.TestCase):
         self.assertIsNone(find_exact_ledger_item_match(1000, {}))
         self.assertIsNone(find_exact_ledger_item_match(0, {"A": 10000}))
         self.assertIsNone(find_exact_ledger_item_match(None, {"A": 10000}))
+
+
+class BuildRandomLedgerBreakdownTests(unittest.TestCase):
+    def test_picks_randomly_among_products_that_fit_exactly(self):
+        import random
+        prices = {"A": 10000, "B": 12000, "C": 11000}      # all have 7000 within 50-90%
+        chosen = {
+            build_random_ledger_breakdown(7000, prices, rng=random.Random(seed))[0]["product"]
+            for seed in range(30)
+        }
+        self.assertEqual({"A", "B", "C"}, chosen)
+
+    def test_adjusts_the_fraction_with_a_cheap_card_when_no_single_product_fits(self):
+        import random
+        prices = {"高額カード": 10000, "安カード": 100}
+        # 9530: no single product x qty<=60 lands in its range, so 高額 at 90% + cheap filler
+        self.assertIsNone(find_exact_ledger_item_match(9530, prices))
+
+        items = build_random_ledger_breakdown(9530, prices, rng=random.Random(1))
+
+        self.assertEqual({"高額カード", "安カード"}, {i["product"] for i in items})
+        self.assertAlmostEqual(9530, sum(i["amount"] for i in items), delta=0.5)
+        for item in items:
+            price = prices[item["product"]]
+            self.assertTrue(price * 0.5 - 0.01 <= item["unit_cost"] <= price * 0.9 + 0.01)
+
+    def test_returns_none_for_nonpositive_remainder_or_no_prices(self):
+        self.assertIsNone(build_random_ledger_breakdown(0, {"A": 100}))
+        self.assertIsNone(build_random_ledger_breakdown(-5, {"A": 100}))
+        self.assertIsNone(build_random_ledger_breakdown(500, {}))
 
 
 class SuggestLedgerItemsTests(unittest.TestCase):
