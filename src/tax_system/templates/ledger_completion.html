@@ -6,9 +6,28 @@
   取込ID {{ imp.id }}（古物台帳 / {{ imp.source_name }}）のうち商品名が空欄の行について、
   相対表からわかる内訳（確定）と、期末在庫表から手動で選んだ内訳（手動）を管理します。<br>
   すべての行で内訳の合計が元の金額と一致すると、内訳付きの古物台帳を出力できます。<br>
-  期末在庫表は、各行の仕入年月と同じ基準月のものだけを使います（別の月の在庫を流用すると、
-  その月にまだ無かった商品が紛れ込むおそれがあるため）。
+  商品名は、期末在庫表に載っている名前をそのまま使います（新しい表現や、在庫表にない商品名は作りません）。
+  期末在庫表は、各行の仕入年月<strong>以前</strong>の基準月のものを使います（期中に買取・販売した商品は同じ月の
+  在庫表に載らないことがあるため。新しい月の在庫表は、その月にまだ無かった商品が紛れ込むため使いません）。
 </p>
+
+{% if month %}
+<section class="card">
+  <h2>{{ month }}をまとめて復元</h2>
+  <p class="lead">
+    {{ month }}の、内訳が合計と一致していない行すべてに、期末在庫表の商品から残額にぴったり合う内訳を
+    自動で入れます（商品は在庫表から選び、買取額は販売価格の50〜90%の範囲で調整します）。
+    ぴったり合わない行・残額がマイナスの行・在庫表が無い行は触りません。入れた内訳は、各行から1件ずつ削除できます。
+  </p>
+  <form method="post" action="{{ url_for('ledger_completion_bulk', import_id=imp.id) }}"
+        onsubmit="return confirm('{{ month }}の未復元の行すべてに内訳を自動で入れます。よろしいですか？');">
+    <input type="hidden" name="month" value="{{ month }}">
+    <button type="submit" class="button">{{ month }}の未復元の行をまとめて復元する</button>
+  </form>
+</section>
+{% else %}
+<p class="muted">月を選ぶと、その月の未復元の行をまとめて復元できます。</p>
+{% endif %}
 
 {% if months %}
 <p>
@@ -73,7 +92,7 @@
 
   {% if not b.resolved %}
   {% if not b.inventory_available %}
-  <p class="muted level-error">{{ b.month or "この行の仕入年月" }}の期末在庫表が見つかりません。先に同じ基準月の期末在庫表を取り込んでください。</p>
+  <p class="muted level-error">{{ b.month or "この行の仕入年月" }}以前の期末在庫表が見つかりません。先に期末在庫表を取り込んでください。</p>
   {% else %}
   <form method="get" action="{{ url_for('ledger_completion_view', import_id=imp.id) }}">
     <input type="hidden" name="month" value="{{ month or '' }}">
@@ -96,7 +115,7 @@
       {% endfor %}
     </div>
     {% else %}
-    <p class="muted">該当する商品が{{ b.month }}の期末在庫表に見つかりません</p>
+    <p class="muted">該当する商品が{{ b.month }}以前の期末在庫表に見つかりません</p>
     {% endif %}
   {% endif %}
 
@@ -107,7 +126,7 @@
   {% if suggestion and suggestion.row_no == b.row_no %}
     {% if suggestion['items'] %}
     <div>
-      <p class="muted">AIによる提案です（{{ b.month }}の期末在庫表の商品のみ）。内容を確認してから追加してください。</p>
+      <p class="muted">提案です（{{ b.month }}以前の期末在庫表にある商品名のみ）。内容を確認してから追加してください。</p>
       {% for it in suggestion['items'] %}
       <form method="post" action="{{ url_for('ledger_completion_add', import_id=imp.id, row_no=b.row_no) }}"
             style="display:flex; gap:0.5rem; align-items:center; margin:0.4rem 0;">

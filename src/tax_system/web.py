@@ -476,6 +476,27 @@ def create_app(home: str | Path | None = None) -> Flask:
             flash(f"追加に失敗しました: {exc}", "error")
         return redirect(url_for("ledger_completion_view", import_id=import_id, month=month))
 
+    @app.route("/ledger-completion/<int:import_id>/bulk", methods=["POST"])
+    def ledger_completion_bulk(import_id: int):
+        ts = system()
+        month = request.form.get("month") or None
+        if not month:
+            flash("月を選んでから実行してください", "error")
+            return redirect(url_for("ledger_completion_view", import_id=import_id))
+        result = ts.complete_ledger_breakdown_for_month(import_id, month)
+        message = f"{month}: {result['added']}行に内訳を入れました"
+        skipped = []
+        if result["no_match"]:
+            skipped.append(f"ぴったり合う商品が見つからなかった行 {result['no_match']}件")
+        if result["negative"]:
+            skipped.append(f"残額がマイナスの行 {result['negative']}件")
+        if result["no_inventory"]:
+            skipped.append(f"期末在庫表が無い行 {result['no_inventory']}件")
+        if skipped:
+            message += "（触らなかった行: " + "、".join(skipped) + "）"
+        flash(message, "success" if result["added"] or not skipped else "error")
+        return redirect(url_for("ledger_completion_view", import_id=import_id, month=month))
+
     @app.route("/ledger-completion/<int:import_id>/<int:row_no>/remove/<int:item_id>", methods=["POST"])
     def ledger_completion_remove(import_id: int, row_no: int, item_id: int):
         ts = system()

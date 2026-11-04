@@ -357,7 +357,7 @@ class LedgerCompletionTests(unittest.TestCase):
         wb.save(path)
         return path
 
-    def test_inventory_for_month_uses_exact_basis_month_not_latest(self):
+    def test_inventory_for_month_uses_this_and_earlier_months_never_later(self):
         path1 = self.root / "inv_may.csv"
         with path1.open("w", encoding="utf-8-sig", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=INVENTORY_COLUMNS, lineterminator="\r\n")
@@ -372,11 +372,28 @@ class LedgerCompletionTests(unittest.TestCase):
             writer.writerow({"商品名": "テストカードA", "仕入れ原価": "1111", "在庫数": "1"})
         self.app.import_inventory(path2, as_of="2026-04")
 
-        # each month must use its OWN basis-month inventory, never the newer one
+        # a month uses its own and EARLIER inventories (newer months override older ones),
+        # but never a LATER month's inventory
+        self.assertEqual({}, self.app._inventory_for_month("2026-03"))
         self.assertEqual(1111, self.app._inventory_for_month("2026-04")["テストカードA"])
         self.assertEqual(9999, self.app._inventory_for_month("2026-05")["テストカードA"])
-        self.assertEqual({}, self.app._inventory_for_month("2026-06"))
+        self.assertEqual(9999, self.app._inventory_for_month("2026-06")["テストカードA"])  # carried forward
         self.assertEqual({}, self.app._inventory_for_month(None))
+
+    def test_inventory_from_earlier_months_supplies_names_not_in_the_row_month(self):
+        # 期末在庫表は期末時点の在庫なので、期中に買って売った商品は同じ月の在庫表に載らない。
+        # 以前の月の在庫表にある商品名も使える（名前は在庫表にあるものだけ）。
+        april = self.root / "inv_april.csv"
+        with april.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=INVENTORY_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            writer.writerow({"商品名": "四月だけのカード", "仕入れ原価": "700", "在庫数": "1"})
+        self.app.import_inventory(april, as_of="2026-04")
+        self.import_inventory_for("2026-05")   # テストカードA / B
+
+        costs = self.app._inventory_for_month("2026-05")
+
+        self.assertEqual({"四月だけのカード", "テストカードA", "テストカードB"}, set(costs))
 
     def test_breakdown_uses_comparison_and_manual_fill(self):
         self.import_inventory_for("2026-05")
@@ -478,15 +495,54 @@ class LedgerCompletionTests(unittest.TestCase):
         self.assertEqual(25000, breakdown[0]["remainder"])
 
     def test_add_ledger_item_rejects_non_matching_month_inventory(self):
-        # inventory is only available for April; the ledger row is from May, so no
-        # inventory should be usable for it, even though a (different-month) snapshot exists.
-        self.import_inventory_for("2026-04")
+        # inventory is only available for June (a LATER month than the ledger row in May):
+        # it must not be used, since it can contain products that didn't exist yet.
+        self.import_inventory_for("2026-06")
         ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))
         breakdown = self.app.propose_ledger_breakdown(ledger_id)
         row_no = breakdown[0]["row_no"]
         self.assertFalse(breakdown[0]["inventory_available"])
         with self.assertRaises(ValueError):
             self.app.add_ledger_item(ledger_id, row_no, "テストカードA", 1)
+
+    def test_bulk_completion_fills_every_unresolved_row_of_the_month_with_names_from_inventory(self):
+        self.app.import_inventory_products(
+            self.write_inventory_products([
+                {"商品名": "テストカードA", "在庫数": "10", "仕入": "5000", "販売価格": "10000"},
+                {"商品名": "テストカードB", "在庫数": "10", "仕入": "300", "販売価格": "600"},
+            ]),
+            as_of="2026-04",
+        )
+        path = self.root / "ledger.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            for date_str, name, total in (("2026-05-01", "客A", 11000), ("2026-05-02", "客B", 7200),
+                                          ("2026-06-01", "客C", 5000)):
+                writer.writerow(dict(zip(LEDGER_COLUMNS, [
+                    date_str, name, "", "1985-01-01", "住所", "000", "", "", "", str(total), "",
+                ])))
+        ledger_id = self.app.import_ledger(path)
+
+        result = self.app.complete_ledger_breakdown_for_month(ledger_id, "2026-05")
+
+        self.assertEqual({"added": 2, "no_match": 0, "negative": 0, "no_inventory": 0}, result)
+        breakdown = {b["name"]: b for b in self.app.propose_ledger_breakdown(ledger_id)}
+        self.assertTrue(breakdown["客A"]["resolved"])
+        self.assertTrue(breakdown["客B"]["resolved"])
+        self.assertFalse(breakdown["客C"]["resolved"])      # other month: untouched
+        allowed = {"テストカードA", "テストカードB"}
+        for name in ("客A", "客B"):
+            self.assertTrue(breakdown[name]["manual_items"])
+            self.assertTrue({i["product"] for i in breakdown[name]["manual_items"]} <= allowed)
+
+    def test_bulk_completion_leaves_over_accounted_and_no_inventory_rows_alone(self):
+        ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))   # May row, no inventory at all
+
+        result = self.app.complete_ledger_breakdown_for_month(ledger_id, "2026-05")
+
+        self.assertEqual({"added": 0, "no_match": 0, "negative": 0, "no_inventory": 1}, result)
+        self.assertEqual([], self.app.propose_ledger_breakdown(ledger_id)[0]["manual_items"])
 
     def test_add_ledger_item_accepts_a_custom_unit_cost_within_the_sell_price_range(self):
         # 相場ものは買取額が毎回変わるため、AIの提案などで販売価格の50-90%の範囲内の

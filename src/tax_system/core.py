@@ -1754,48 +1754,64 @@ class TaxSystem:
         values = json.loads(record["data_json"])["values"]
         return self._comparison_purchase_shortfall_from_values(headers, values)
 
-    def _inventory_rows_for_month(self, month: str | None) -> list[sqlite3.Row]:
-        """指定した基準年月（例: "2026-04"）と一致する期末在庫表の生レコードを返す。
-        より新しい基準月の在庫表を代わりに使うと、対象月にはまだ仕入れていない商品が
-        紛れ込むおそれがあるため、必ず同じ基準月の在庫表のみを使う。該当する在庫表が
-        なければ空リストを返す（呼び出し側は「その月の在庫表がない」ものとして扱う）。
+    def _inventory_maps_for_month(self, month: str | None) -> tuple[dict[str, float], dict[str, float]]:
+        """指定した基準年月（例: "2026-04"）**以前**の期末在庫表から、商品名ごとの
+        仕入れ原価と販売価格を返す。内訳復元の商品名は、必ず期末在庫表に載っている名前を
+        そのまま使い、新しい表現や存在しない名前は作らない。
+        期末在庫表は期末時点の在庫なので、期中に買取・販売した商品は同じ月の在庫表には載らない
+        ことがある。そのため対象月だけでなくそれ以前の月の在庫表も使う（古い月から順に重ね、
+        新しい月の値で上書きする）。対象月より新しい基準月の在庫表は、その月にはまだ無かった
+        商品が紛れ込むおそれがあるため使わない。同じ基準月の在庫表が複数あるときは取込日時が
+        新しいものだけを使う。該当する在庫表がなければ空の辞書を返す。
         """
         if month is None:
-            return []
+            return {}, {}
+        cache: dict[int, tuple[dict[str, float], dict[str, float]]] = self.__dict__.setdefault(
+            "_inventory_import_cache", {})
         with closing(self.connect()) as db, db:
-            imps = db.execute(
+            latest_by_month: dict[str, sqlite3.Row] = {}
+            for imp in db.execute(
                 "SELECT id, imported_at, metadata_json FROM imports WHERE kind='inventory'"
-            ).fetchall()
-            matches = [imp for imp in imps if json.loads(imp["metadata_json"]).get("as_of") == month]
-            if not matches:
-                return []
-            imp = max(matches, key=lambda row: row["imported_at"])
-            return db.execute("SELECT data_json FROM records WHERE import_id=?", (imp["id"],)).fetchall()
+            ).fetchall():
+                as_of = json.loads(imp["metadata_json"]).get("as_of")
+                if not as_of or as_of > month:
+                    continue
+                current = latest_by_month.get(as_of)
+                if current is None or imp["imported_at"] > current["imported_at"]:
+                    latest_by_month[as_of] = imp
+            costs: dict[str, float] = {}
+            prices: dict[str, float] = {}
+            for as_of in sorted(latest_by_month):
+                imp_id = latest_by_month[as_of]["id"]
+                if imp_id not in cache:
+                    import_costs: dict[str, float] = {}
+                    import_prices: dict[str, float] = {}
+                    for row in db.execute("SELECT data_json FROM records WHERE import_id=?", (imp_id,)).fetchall():
+                        data = json.loads(row["data_json"])
+                        product = (data.get("商品名") or "").strip()
+                        if not product:
+                            continue
+                        cost = _to_number(data.get("仕入れ原価"))
+                        price = _to_number(data.get("販売価格"))
+                        if cost is not None:
+                            import_costs[product] = cost
+                        if price is not None and price > 0:
+                            import_prices[product] = price
+                    cache[imp_id] = (import_costs, import_prices)
+                costs.update(cache[imp_id][0])
+                prices.update(cache[imp_id][1])
+        return costs, prices
 
     def _inventory_for_month(self, month: str | None) -> dict[str, float]:
-        """指定した基準年月の期末在庫表から、商品名と仕入れ原価の対応を返す。"""
-        costs: dict[str, float] = {}
-        for row in self._inventory_rows_for_month(month):
-            data = json.loads(row["data_json"])
-            product = (data.get("商品名") or "").strip()
-            cost = _to_number(data.get("仕入れ原価"))
-            if product and cost is not None:
-                costs[product] = cost
-        return costs
+        """指定した基準年月以前の期末在庫表から、商品名と仕入れ原価の対応を返す。"""
+        return self._inventory_maps_for_month(month)[0]
 
     def _inventory_sell_prices_for_month(self, month: str | None) -> dict[str, float]:
-        """指定した基準年月の期末在庫表から、商品名と販売価格の対応を返す。相場もの（同じ
+        """指定した基準年月以前の期末在庫表から、商品名と販売価格の対応を返す。相場もの（同じ
         商品でも毎回買取額が変わる）の内訳復元で、実際の買取額の目安レンジ（販売価格の
         50〜90%程度）を計算するために使う。仕入れ原価とは別の値。
         """
-        prices: dict[str, float] = {}
-        for row in self._inventory_rows_for_month(month):
-            data = json.loads(row["data_json"])
-            product = (data.get("商品名") or "").strip()
-            price = _to_number(data.get("販売価格"))
-            if product and price is not None and price > 0:
-                prices[product] = price
-        return prices
+        return self._inventory_maps_for_month(month)[1]
 
     def search_inventory(self, query: str, month: str | None, limit: int = 30) -> list[dict[str, Any]]:
         query = query.strip()
@@ -1814,8 +1830,8 @@ class TaxSystem:
         まだ手動で埋めていない残額（要確認）を計算する。金額の内訳は書き換えず、
         常にこの場で再計算するため、相対表・在庫表を取込み直すと結果も更新される。
         month（例: "2026-04"）を指定すると、その仕入年月（日時）の行だけに絞り込む。
-        期末在庫表は各行の仕入年月と同じ基準月のものだけを使う。別の月の在庫表を代わりに
-        使うと、その月にはまだ仕入れていない商品が紛れ込むおそれがあるため。
+        期末在庫表は各行の仕入年月以前の基準月のものを使う（新しい月の在庫表は、その月には
+        まだ無かった商品が紛れ込むおそれがあるため使わない）。
         """
         with closing(self.connect()) as db, db:
             imp = db.execute("SELECT * FROM imports WHERE id=?", (ledger_import_id,)).fetchone()
@@ -1976,6 +1992,36 @@ class TaxSystem:
     def remove_ledger_item(self, item_id: int) -> None:
         with closing(self.connect()) as db, db:
             db.execute("DELETE FROM ledger_items WHERE id=? AND source='manual'", (item_id,))
+
+    def complete_ledger_breakdown_for_month(self, ledger_import_id: int, month: str) -> dict[str, int]:
+        """指定した仕入年月の、内訳がまだ合計と一致していない古物台帳の行すべてに、期末在庫表の
+        商品から残額にぴったり合う内訳を機械的に入れる（find_exact_ledger_item_match）。
+        商品名は期末在庫表（その月以前）にある名前をそのまま使い、AIは使わないので、新しい
+        表現や存在しない商品名は作らない。残額がマイナス（すでに内訳が合計を超えている）の行、
+        期末在庫表が無い行、ぴったり合う商品が見つからない行は触らず、件数だけ返す。
+        """
+        added = no_match = negative = no_inventory = 0
+        prices_cache: dict[str | None, dict[str, float]] = {}
+        for entry in self.propose_ledger_breakdown(ledger_import_id, month=month):
+            if entry["resolved"] or entry["remainder"] is None:
+                continue
+            if entry["remainder"] < 0:
+                negative += 1
+                continue
+            if not entry["inventory_available"]:
+                no_inventory += 1
+                continue
+            row_month = entry["month"]
+            if row_month not in prices_cache:
+                prices_cache[row_month] = self._inventory_sell_prices_for_month(row_month)
+            match = find_exact_ledger_item_match(entry["remainder"], prices_cache[row_month])
+            if not match:
+                no_match += 1
+                continue
+            self.add_ledger_item(ledger_import_id, entry["row_no"], match["product"], match["qty"],
+                                 unit_cost=match["unit_cost"])
+            added += 1
+        return {"added": added, "no_match": no_match, "negative": negative, "no_inventory": no_inventory}
 
     @staticmethod
     def _ledger_duplicate_key(data: dict[str, Any]) -> str:
