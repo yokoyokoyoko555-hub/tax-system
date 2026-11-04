@@ -492,9 +492,23 @@ def create_app(home: str | Path | None = None) -> Flask:
             skipped.append(f"残額がマイナスの行 {result['negative']}件")
         if result["no_inventory"]:
             skipped.append(f"期末在庫表が無い行 {result['no_inventory']}件")
+        if result["no_total"]:
+            skipped.append(f"元の金額が未入力の行 {result['no_total']}件")
         if skipped:
             message += "（触らなかった行: " + "、".join(skipped) + "）"
         flash(message, "success" if result["added"] or not skipped else "error")
+        return redirect(url_for("ledger_completion_view", import_id=import_id, month=month))
+
+    @app.route("/ledger-completion/<int:import_id>/<int:row_no>/total", methods=["POST"])
+    def ledger_completion_set_total(import_id: int, row_no: int):
+        ts = system()
+        month = request.form.get("month") or None
+        try:
+            ts.set_ledger_total(import_id, row_no, float(request.form.get("total", "").strip()))
+        except (ValueError, TypeError) as exc:
+            flash(f"金額を変更できませんでした: {exc}", "error")
+        else:
+            flash(f"{row_no}行目の元の金額を変更しました", "success")
         return redirect(url_for("ledger_completion_view", import_id=import_id, month=month))
 
     @app.route("/ledger-completion/<int:import_id>/<int:row_no>/remove/<int:item_id>", methods=["POST"])

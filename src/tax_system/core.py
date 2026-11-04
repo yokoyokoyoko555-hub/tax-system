@@ -2034,6 +2034,24 @@ class TaxSystem:
         with closing(self.connect()) as db, db:
             db.execute("DELETE FROM ledger_items WHERE id=? AND source='manual'", (item_id,))
 
+    def set_ledger_total(self, ledger_import_id: int, row_no: int, total: float) -> None:
+        """古物台帳の行の元の金額（合計）を入力・修正する。金額が空欄の行は残額を計算できず
+        内訳復元に進めないため、内訳復元の画面から直接入力できるようにする。内訳（相対表・手動）
+        は変えず、残額は新しい金額で計算し直される。
+        """
+        if total < 0:
+            raise ValueError("金額は0以上で入力してください")
+        with closing(self.connect()) as db, db:
+            record = db.execute(
+                "SELECT r.id, r.data_json FROM records r JOIN imports i ON r.import_id=i.id "
+                "WHERE r.import_id=? AND r.row_no=? AND i.kind='ledger'", (ledger_import_id, row_no),
+            ).fetchone()
+            if not record:
+                raise ValueError("対象の行が見つかりません")
+            data = json.loads(record["data_json"])
+            data["金額"] = int(total) if float(total).is_integer() else total
+            db.execute("UPDATE records SET data_json=? WHERE id=?", (json_text(data), record["id"]))
+
     def complete_ledger_breakdown_for_month(self, ledger_import_id: int, month: str,
                                             rng: random.Random | None = None) -> dict[str, int]:
         """指定した仕入年月の、内訳がまだ合計と一致していない古物台帳の行すべてに、期末在庫表の
@@ -2043,11 +2061,14 @@ class TaxSystem:
         作らない。残額がマイナス（すでに内訳が合計を超えている）の行、期末在庫表が無い行、
         内訳を作れなかった行は触らず、件数だけ返す。
         """
-        added = no_match = negative = no_inventory = 0
+        added = no_match = negative = no_inventory = no_total = 0
         rng = rng or random.Random()
         prices_cache: dict[str | None, dict[str, float]] = {}
         for entry in self.propose_ledger_breakdown(ledger_import_id, month=month):
-            if entry["resolved"] or entry["remainder"] is None:
+            if entry["resolved"]:
+                continue
+            if entry["remainder"] is None:
+                no_total += 1
                 continue
             if entry["remainder"] < 0:
                 negative += 1
@@ -2066,7 +2087,8 @@ class TaxSystem:
                 self.add_ledger_item(ledger_import_id, entry["row_no"], item["product"], item["qty"],
                                      unit_cost=item["unit_cost"])
             added += 1
-        return {"added": added, "no_match": no_match, "negative": negative, "no_inventory": no_inventory}
+        return {"added": added, "no_match": no_match, "negative": negative,
+                "no_inventory": no_inventory, "no_total": no_total}
 
     @staticmethod
     def _ledger_duplicate_key(data: dict[str, Any]) -> str:

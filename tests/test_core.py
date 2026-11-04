@@ -527,7 +527,7 @@ class LedgerCompletionTests(unittest.TestCase):
 
         result = self.app.complete_ledger_breakdown_for_month(ledger_id, "2026-05")
 
-        self.assertEqual({"added": 2, "no_match": 0, "negative": 0, "no_inventory": 0}, result)
+        self.assertEqual({"added": 2, "no_match": 0, "negative": 0, "no_inventory": 0, "no_total": 0}, result)
         breakdown = {b["name"]: b for b in self.app.propose_ledger_breakdown(ledger_id)}
         self.assertTrue(breakdown["客A"]["resolved"])
         self.assertTrue(breakdown["客B"]["resolved"])
@@ -537,12 +537,44 @@ class LedgerCompletionTests(unittest.TestCase):
             self.assertTrue(breakdown[name]["manual_items"])
             self.assertTrue({i["product"] for i in breakdown[name]["manual_items"]} <= allowed)
 
+    def test_a_missing_total_can_be_entered_and_then_the_row_can_be_completed(self):
+        self.app.import_inventory_products(
+            self.write_inventory_products([
+                {"商品名": "テストカードA", "在庫数": "10", "仕入": "5000", "販売価格": "10000"},
+            ]),
+            as_of="2026-05",
+        )
+        path = self.root / "ledger.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            writer.writerow(dict(zip(LEDGER_COLUMNS, [
+                "2026-05-01", "客A", "", "1985-01-01", "住所", "000", "", "", "", "", "",
+            ])))
+        ledger_id = self.app.import_ledger(path)
+        entry = self.app.propose_ledger_breakdown(ledger_id)[0]
+        self.assertIsNone(entry["total"])
+        self.assertIsNone(entry["remainder"])
+        self.assertEqual(1, self.app.complete_ledger_breakdown_for_month(ledger_id, "2026-05")["no_total"])
+
+        self.app.set_ledger_total(ledger_id, entry["row_no"], 7000)
+
+        entry = self.app.propose_ledger_breakdown(ledger_id)[0]
+        self.assertEqual(7000, entry["total"])
+        self.assertEqual(7000, entry["remainder"])
+        self.assertEqual(1, self.app.complete_ledger_breakdown_for_month(ledger_id, "2026-05")["added"])
+        self.assertTrue(self.app.propose_ledger_breakdown(ledger_id)[0]["resolved"])
+        with self.assertRaises(ValueError):
+            self.app.set_ledger_total(ledger_id, entry["row_no"], -1)
+        with self.assertRaises(ValueError):
+            self.app.set_ledger_total(ledger_id, 99999, 100)
+
     def test_bulk_completion_leaves_over_accounted_and_no_inventory_rows_alone(self):
         ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))   # May row, no inventory at all
 
         result = self.app.complete_ledger_breakdown_for_month(ledger_id, "2026-05")
 
-        self.assertEqual({"added": 0, "no_match": 0, "negative": 0, "no_inventory": 1}, result)
+        self.assertEqual({"added": 0, "no_match": 0, "negative": 0, "no_inventory": 1, "no_total": 0}, result)
         self.assertEqual([], self.app.propose_ledger_breakdown(ledger_id)[0]["manual_items"])
 
     def test_add_ledger_item_accepts_a_custom_unit_cost_within_the_sell_price_range(self):
