@@ -483,7 +483,8 @@ def create_app(home: str | Path | None = None) -> Flask:
         if not month:
             flash("月を選んでから実行してください", "error")
             return redirect(url_for("ledger_completion_view", import_id=import_id))
-        result = ts.complete_ledger_breakdown_for_month(import_id, month)
+        redo = request.form.get("redo") == "on"
+        result = ts.complete_ledger_breakdown_for_month(import_id, month, redo=redo)
         message = f"{month}: {result['added']}行に内訳を入れました"
         skipped = []
         if result["no_match"]:

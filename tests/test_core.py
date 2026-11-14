@@ -582,6 +582,30 @@ class LedgerCompletionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.app.set_ledger_total(ledger_id, 99999, 100)
 
+    def test_bulk_completion_can_be_redone_replacing_the_earlier_manual_items(self):
+        self.app.import_inventory_products(
+            self.write_inventory_products([
+                {"商品名": f"テストカード{i}", "在庫数": "1", "仕入": "1", "販売価格": str(300 + i * 100)}
+                for i in range(60)
+            ]),
+            as_of="2026-05",
+        )
+        ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))
+        self.app.complete_ledger_breakdown_for_month(ledger_id, "2026-05")
+        first = self.app.propose_ledger_breakdown(ledger_id)[0]
+        self.assertTrue(first["resolved"])
+
+        # a plain re-run leaves a resolved row alone; redo replaces its manual items
+        again = self.app.complete_ledger_breakdown_for_month(ledger_id, "2026-05")
+        self.assertEqual(0, again["added"])
+        redone = self.app.complete_ledger_breakdown_for_month(ledger_id, "2026-05", redo=True)
+
+        self.assertEqual(1, redone["added"])
+        entry = self.app.propose_ledger_breakdown(ledger_id)[0]
+        self.assertTrue(entry["resolved"])
+        self.assertAlmostEqual(11000, sum(i["amount"] for i in entry["manual_items"]), delta=0.5)
+        self.assertGreaterEqual(len(entry["manual_items"]), 2)
+
     def test_bulk_completion_leaves_over_accounted_and_no_inventory_rows_alone(self):
         ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))   # May row, no inventory at all
 
@@ -1268,9 +1292,9 @@ class FindExactLedgerItemMatchTests(unittest.TestCase):
 class BuildRandomLedgerBreakdownTests(unittest.TestCase):
     def test_picks_randomly_among_products_that_fit_exactly(self):
         import random
-        prices = {"A": 10000, "B": 12000, "C": 11000}      # all have 7000 within 50-90%
+        prices = {"A": 1000, "B": 1200, "C": 1100}      # all have 700 within 50-90% (small -> one card)
         chosen = {
-            build_random_ledger_breakdown(7000, prices, rng=random.Random(seed))[0]["product"]
+            build_random_ledger_breakdown(700, prices, rng=random.Random(seed))[0]["product"]
             for seed in range(30)
         }
         self.assertEqual({"A", "B", "C"}, chosen)
@@ -1288,6 +1312,22 @@ class BuildRandomLedgerBreakdownTests(unittest.TestCase):
         for item in items:
             price = prices[item["product"]]
             self.assertTrue(price * 0.5 - 0.01 <= item["unit_cost"] <= price * 0.9 + 0.01)
+
+    def test_a_larger_remainder_is_split_across_two_to_five_different_cards_with_similar_ratios(self):
+        import random
+        prices = {f"カード{i}": 200 + i * 130 for i in range(150)}       # 200 .. ~19500
+        counts = set()
+        for seed in range(40):
+            remainder = random.Random(seed).choice([3000, 7777, 12345, 20000, 48000])
+            items = build_random_ledger_breakdown(remainder, prices, rng=random.Random(seed))
+            counts.add(len(items))
+            self.assertAlmostEqual(remainder, sum(i["amount"] for i in items), delta=0.5)
+            self.assertEqual(len(items), len({i["product"] for i in items}))       # different cards
+            self.assertTrue(2 <= len(items) <= 5)
+            ratios = [i["unit_cost"] / prices[i["product"]] for i in items]
+            self.assertTrue(all(0.5 - 0.001 <= r <= 0.9 + 0.001 for r in ratios))
+            self.assertLessEqual(max(ratios) - min(ratios), 0.4)                    # no big divergence
+        self.assertTrue(len(counts) >= 3)                                           # varies 2..5
 
     def test_returns_none_for_nonpositive_remainder_or_no_prices(self):
         self.assertIsNone(build_random_ledger_breakdown(0, {"A": 100}))

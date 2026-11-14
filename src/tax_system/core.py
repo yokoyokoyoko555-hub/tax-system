@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import csv
 import hashlib
 import json
@@ -149,21 +150,82 @@ def find_exact_ledger_item_match(remainder: float, sell_prices: dict[str, float]
     return None
 
 
+def _exact_candidates(remainder: float, sorted_prices: list[tuple[float, str]], max_qty: int,
+                      exclude: set[str] | None = None) -> tuple[int, list[tuple[str, float]]] | None:
+    """残額を「商品1種類×数量」で、単価が販売価格の50〜90%に収まるようにぴったり説明できる
+    組み合わせのうち、数量が最も少ないものを探す。(数量, [(商品名, 販売価格に対する単価の比率)])
+    を返す。sorted_pricesは(販売価格, 商品名)を価格順に並べたもの。
+    """
+    prices = [price for price, _ in sorted_prices]
+    for qty in range(1, max_qty + 1):
+        unit = remainder / qty
+        lo = bisect.bisect_left(prices, unit / 0.9 - 0.01)
+        hi = bisect.bisect_right(prices, unit / 0.5 + 0.01)
+        found = [
+            (name, unit / price) for price, name in sorted_prices[lo:hi]
+            if price > 0 and not (exclude and name in exclude)
+        ]
+        if found:
+            return qty, found
+    return None
+
+
 def build_random_ledger_breakdown(remainder: float, sell_prices: dict[str, float],
                                   rng: random.Random | None = None, max_qty: int = 60) -> list[dict[str, Any]] | None:
     """残額を期末在庫表の商品で埋める内訳を、ランダムに作る。商品名は期末在庫表にある名前だけを
     使い、各商品の単価は販売価格の50〜90%の範囲に収める。合計は残額と一致させる。
-    まず商品1種類×数量でぴったり合う組み合わせ（find_exact_ledger_item_match）を探し、
-    無ければランダムな商品を最大単価（90%）で何枚か入れ、残りの端数を細かい（安い）カードで
-    調整する。どうしても作れなければNoneを返す。
+    残額が1000円以上なら、1回の買取に2〜5種類のカードが入るようにする。買取額が大きく
+    乖離しないよう、1回の買取の中で販売価格に対する買取額の比率（掛け率）をそろえる
+    （最後の1種類で残額を合わせる際も、掛け率が近い商品を選ぶ）。残額が小さい場合や
+    複数種類で作れない場合は、商品1種類（でぴったり合わなければ、ランダムな商品＋端数を
+    安いカードで調整）にする。どうしても作れなければNoneを返す。
     """
     rng = rng or random.Random()
     if not sell_prices or remainder is None or remainder <= 0:
         return None
-    exact = find_exact_ledger_item_match(remainder, sell_prices, max_qty=max_qty, rng=rng)
-    if exact:
-        return [exact]
-    cheap_prices = dict(sorted(sell_prices.items(), key=lambda kv: kv[1])[:300])
+    sorted_prices = sorted((price, name) for name, price in sell_prices.items() if price > 0)
+    prices = [price for price, _ in sorted_prices]
+
+    if remainder >= 1000:
+        for _ in range(30):
+            count = rng.randint(2, max(2, min(5, int(remainder // 500))))
+            ratio = rng.uniform(0.55, 0.85)
+            used: set[str] = set()
+            items: list[dict[str, Any]] = []
+            left = remainder
+            for n in range(count - 1):
+                share = left / (count - n)
+                lo = bisect.bisect_left(prices, share * 0.6 / ratio)
+                hi = bisect.bisect_right(prices, share * 1.4 / ratio)
+                pool = [name for _, name in sorted_prices[lo:hi] if name not in used]
+                if not pool:
+                    break
+                name = rng.choice(pool)
+                amount = float(round(ratio * sell_prices[name]))
+                amount = min(max(amount, sell_prices[name] * 0.5), sell_prices[name] * 0.9)
+                amount = float(round(amount))
+                if amount >= left - 0.5:
+                    break
+                items.append({"product": name, "qty": 1, "unit_cost": amount, "amount": amount})
+                used.add(name)
+                left = round(left - amount, 2)
+            else:
+                last = _exact_candidates(left, sorted_prices, max_qty, exclude=used)
+                if last:
+                    qty, found = last
+                    near = [f for f in found if abs(f[1] - ratio) <= 0.1] or found
+                    name, _ = rng.choice(near)
+                    unit = round(left / qty, 2)
+                    items.append({"product": name, "qty": qty, "unit_cost": unit, "amount": round(unit * qty, 2)})
+                    return items
+
+    last = _exact_candidates(remainder, sorted_prices, max_qty)
+    if last:
+        qty, found = last
+        name, _ = rng.choice(found)
+        unit = round(remainder / qty, 2)
+        return [{"product": name, "qty": qty, "unit_cost": unit, "amount": round(unit * qty, 2)}]
+    cheap = sorted_prices[:300]
     products = list(sell_prices)
     for _ in range(40):
         product = rng.choice(products)
@@ -175,11 +237,14 @@ def build_random_ledger_breakdown(remainder: float, sell_prices: dict[str, float
         leftover = round(remainder - main_total, 2)
         if leftover < 0.5:
             return [{"product": product, "qty": qty, "unit_cost": round(high, 2), "amount": main_total}]
-        filler = find_exact_ledger_item_match(leftover, cheap_prices, max_qty=max_qty, rng=rng)
-        if filler and filler["product"] != product:
+        filler = _exact_candidates(leftover, cheap, max_qty, exclude={product})
+        if filler:
+            f_qty, found = filler
+            name, _ = rng.choice(found)
+            unit = round(leftover / f_qty, 2)
             return [
                 {"product": product, "qty": qty, "unit_cost": round(high, 2), "amount": main_total},
-                filler,
+                {"product": name, "qty": f_qty, "unit_cost": unit, "amount": round(unit * f_qty, 2)},
             ]
     return None
 
@@ -2053,17 +2118,28 @@ class TaxSystem:
             db.execute("UPDATE records SET data_json=? WHERE id=?", (json_text(data), record["id"]))
 
     def complete_ledger_breakdown_for_month(self, ledger_import_id: int, month: str,
-                                            rng: random.Random | None = None) -> dict[str, int]:
+                                            rng: random.Random | None = None, redo: bool = False) -> dict[str, int]:
         """指定した仕入年月の、内訳がまだ合計と一致していない古物台帳の行すべてに、期末在庫表の
         商品から、合計が残額と一致する内訳をランダムに入れる（build_random_ledger_breakdown。
-        商品1種類でぴったり合わなければ、端数を細かいカードで調整する）。商品名は期末在庫表
-        （その月以前）にある名前をそのまま使い、AIは使わないので、新しい表現や存在しない商品名は
-        作らない。残額がマイナス（すでに内訳が合計を超えている）の行、期末在庫表が無い行、
-        内訳を作れなかった行は触らず、件数だけ返す。
+        残額が大きければ1回の買取に複数種類のカードを入れ、端数は細かいカードで調整する）。
+        商品名は期末在庫表（その月以前）にある名前をそのまま使い、AIは使わないので、新しい表現や
+        存在しない商品名は作らない。残額がマイナス（すでに内訳が合計を超えている）の行、
+        期末在庫表が無い行、内訳を作れなかった行は触らず、件数だけ返す。
+        redo=Trueなら、先にその月の行の手動の内訳（これまでの自動復元分を含む）をすべて削除して
+        からやり直す（相対表からわかる確定の内訳は削除しない）。
         """
         added = no_match = negative = no_inventory = no_total = 0
         rng = rng or random.Random()
+        if redo:
+            rows = [e["row_no"] for e in self.propose_ledger_breakdown(ledger_import_id, month=month)]
+            with closing(self.connect()) as db, db:
+                db.executemany(
+                    "DELETE FROM ledger_items WHERE ledger_import_id=? AND ledger_row_no=? AND source='manual'",
+                    [(ledger_import_id, row_no) for row_no in rows],
+                )
         prices_cache: dict[str | None, dict[str, float]] = {}
+        new_rows: list[tuple[Any, ...]] = []
+        now = datetime.now().isoformat(timespec="seconds")
         for entry in self.propose_ledger_breakdown(ledger_import_id, month=month):
             if entry["resolved"]:
                 continue
@@ -2084,9 +2160,15 @@ class TaxSystem:
                 no_match += 1
                 continue
             for item in items:
-                self.add_ledger_item(ledger_import_id, entry["row_no"], item["product"], item["qty"],
-                                     unit_cost=item["unit_cost"])
+                new_rows.append((ledger_import_id, entry["row_no"], item["product"], item["qty"],
+                                 item["unit_cost"], item["amount"], "manual", now))
             added += 1
+        if new_rows:
+            with closing(self.connect()) as db, db:
+                db.executemany(
+                    "INSERT INTO ledger_items(ledger_import_id, ledger_row_no, product, qty, unit_cost, amount, "
+                    "source, created_at) VALUES(?,?,?,?,?,?,?,?)", new_rows,
+                )
         return {"added": added, "no_match": no_match, "negative": negative,
                 "no_inventory": no_inventory, "no_total": no_total}
 
