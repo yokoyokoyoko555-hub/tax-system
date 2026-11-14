@@ -2784,10 +2784,10 @@ class TaxSystem:
         else:
             checks = self._validate_ledger(records) if imp["kind"] == "ledger" else self.validate(import_id)
 
-        # 相対表は利用者の判断でエラーが残っていても正式出力できる。古物台帳・期末在庫表は
-        # これまで通り、エラーがあれば確認用出力のみに制限する。
-        if imp["kind"] != "comparison" and any(c.level == "error" for c in checks) and not preview:
-            raise ValueError("検証エラーがあるため正式出力できません。--preview を指定すると確認用出力が可能です")
+        # 相対表・古物台帳は利用者の判断でエラーが残っていても出力できる（古物台帳のCSVは確認用でも
+        # 内容が同じで、止める意味がないため）。期末在庫表はこれまで通り、エラーがあれば確認用のみ。
+        if imp["kind"] not in ("comparison", "ledger") and any(c.level == "error" for c in checks) and not preview:
+            raise ValueError("検証エラーがあるため正式出力できません。確認用として出力してください")
         output = Path(output).resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
         if imp["kind"] == "ledger":

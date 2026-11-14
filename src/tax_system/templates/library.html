@@ -94,7 +94,7 @@
         {% endfor %}
       </tbody>
     </table>
-    <p class="muted">エラーが残っている月は、確認用のみ出力できます（内訳復元・チェック画面で確認してください）。</p>
+    <p class="muted">エラーが残っている月でも出力できます（内訳復元・チェック画面で内容を確認してから出力してください）。</p>
     <p>
       <a class="button small" href="{{ url_for('ledger_completion_view', import_id=merged.id) }}">内訳復元（すべての月）</a>
       <a class="button small" href="{{ url_for('validate_import', import_id=merged.id) }}">チェック・出力</a>

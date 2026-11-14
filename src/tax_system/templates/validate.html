@@ -32,8 +32,8 @@
         {% endfor %}
       </tbody>
     </table>
-    {% if imp.kind == "comparison" %}
-    <p class="muted">エラーが残っていても、下の出力欄でチェックを外せば正式出力できます。内容をよく確認してください。</p>
+    {% if imp.kind != "inventory" %}
+    <p class="muted">エラーが残っていても出力できます。内容をよく確認してください。</p>
     {% else %}
     <p class="muted">エラーが1件でもある場合、正式出力はできません。内容を確認のうえ、元データを修正して取込し直してください。確認用出力は可能です。</p>
     {% endif %}
@@ -64,15 +64,15 @@
 
     <label class="checkbox">
       <input type="checkbox" name="preview"
-             {% if has_errors and imp.kind != "comparison" %}checked disabled{% elif has_errors %}checked{% endif %}>
+             {% if has_errors and imp.kind == "inventory" %}checked disabled{% elif has_errors and imp.kind != "ledger" %}checked{% endif %}>
       確認用として出力する（正式帳票ではない透かし入り）
     </label>
-    {% if has_errors and imp.kind != "comparison" %}<input type="hidden" name="preview" value="on">{% endif %}
+    {% if has_errors and imp.kind == "inventory" %}<input type="hidden" name="preview" value="on">{% endif %}
 
     <button type="submit" class="button" {% if imp.kind == "comparison" and not templates %}disabled{% endif %}>
       出力する
     </button>
-    {% if has_errors and imp.kind != "comparison" %}
+    {% if has_errors and imp.kind == "inventory" %}
     <p class="muted">エラーがあるため、正式出力は選べません（確認用のみ）。</p>
     {% elif has_errors %}
     <p class="muted">エラーが残っていますが、チェックを外せば正式出力もできます。内容をよく確認してください。</p>

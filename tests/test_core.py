@@ -64,9 +64,22 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual("", records[0]["data"]["備考"])
         self.assertEqual("商品", records[0]["data"]["商品名"])
 
-    def test_error_blocks_formal_export(self):
+    def test_ledger_with_errors_can_still_be_exported_formally(self):
+        # 古物台帳は利用者の判断でエラーが残っていても出力できる（CSVは確認用と内容が同じ）
         row = dict(zip(LEDGER_COLUMNS, ["2026-01-01", "", "", "", "", "", "商品", "2", "100", "999", ""])); path = self.write_csv(row)
         import_id = self.app.import_ledger(path)
+        self.assertTrue(any(c.level == "error" for c in self.app.validate(import_id)))
+        output = self.app.export(import_id, self.root / "formal.csv")
+        self.assertTrue(output.exists())
+        self.app.export(import_id, self.root / "preview.csv", preview=True)
+
+    def test_inventory_with_errors_is_still_blocked_from_formal_export(self):
+        path = self.root / "inv.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=INVENTORY_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            writer.writerow({"商品名": "", "仕入れ原価": "100", "在庫数": "1"})
+        import_id = self.app.import_inventory(path, as_of="2026-04")
         with self.assertRaises(ValueError): self.app.export(import_id, self.root / "blocked.csv")
         self.app.export(import_id, self.root / "preview.csv", preview=True)
 
