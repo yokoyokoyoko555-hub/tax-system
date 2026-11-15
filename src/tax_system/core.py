@@ -428,6 +428,13 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _csv_number(value: Any) -> Any:
+    """CSVに書く数値。整数なら小数点なし（1.0ではなく1）、そうでなければ小数第2位まで。"""
+    if isinstance(value, (int, float)):
+        return int(value) if float(value).is_integer() else round(float(value), 2)
+    return value
+
+
 def json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
@@ -2578,11 +2585,19 @@ class TaxSystem:
                 continue
         return count
 
-    def export_completed_ledger(self, ledger_import_id: int, output: str | Path) -> Path:
-        breakdown = self.propose_ledger_breakdown(ledger_import_id)
+    def export_completed_ledger(self, ledger_import_id: int, output: str | Path, month: str | None = None) -> Path:
+        """内訳を復元した古物台帳をCSVに出力する。形式は取り込む古物台帳と同じ列（日時・名前・
+        ふりがな・生年月日・住所・電話番号・商品名・個数・単価・金額・備考）。個数・単価・金額は
+        取込元と同じく、整数なら小数点なし（1.0ではなく1）で書く。month（例: "2025-04"）を
+        指定すると、その月の行だけを出力し、未復元の行の確認もその月の分だけにする。
+        """
+        breakdown = self.propose_ledger_breakdown(ledger_import_id, month=month)
         unresolved = [b for b in breakdown if not b["resolved"]]
         if unresolved:
-            raise ValueError(f"{len(unresolved)}件の行で内訳の金額が合計と一致していません。先に確定してください")
+            scope = f"{month}の" if month else ""
+            raise ValueError(
+                f"{scope}{len(unresolved)}件の行で内訳の金額が合計と一致していません。先に内訳を復元してください"
+            )
         breakdown_by_row = {b["row_no"]: b for b in breakdown}
         with closing(self.connect()) as db, db:
             records = db.execute(
@@ -2595,6 +2610,10 @@ class TaxSystem:
             writer.writeheader()
             for record in records:
                 data = json.loads(record["data_json"])
+                if month is not None:
+                    row_date = _to_date(data.get("日時"))
+                    if not row_date or f"{row_date.year:04d}-{row_date.month:02d}" != month:
+                        continue
                 entry = breakdown_by_row.get(record["row_no"])
                 if not entry:
                     writer.writerow(data)
@@ -2603,9 +2622,9 @@ class TaxSystem:
                 for item in entry["known_items"] + entry["manual_items"]:
                     row = dict(data)
                     row["商品名"] = item["product"]
-                    row["個数"] = item["qty"]
-                    row["単価"] = item["unit_cost"]
-                    row["金額"] = item["amount"]
+                    row["個数"] = _csv_number(item["qty"])
+                    row["単価"] = _csv_number(item["unit_cost"])
+                    row["金額"] = _csv_number(item["amount"])
                     note = f"内訳復元（元合計{original_total}円・{'相対表' if item['source'] == 'comparison' else '手動'}）"
                     row["備考"] = f"{data.get('備考') or ''} {note}".strip()
                     writer.writerow(row)

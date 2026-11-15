@@ -565,14 +565,16 @@ def create_app(home: str | Path | None = None) -> Flask:
     @app.route("/ledger-completion/<int:import_id>/export", methods=["POST"])
     def ledger_completion_export(import_id: int):
         ts = system()
+        month = request.form.get("month") or None
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        output = OUTPUT_DIR / f"内訳復元_ledger_{import_id}_{stamp}.csv"
+        label = f"{month}_" if month else ""
+        output = OUTPUT_DIR / f"内訳復元_ledger_{import_id}_{label}{stamp}.csv"
         try:
-            ts.export_completed_ledger(import_id, output)
+            ts.export_completed_ledger(import_id, output, month=month)
         except ValueError as exc:
             flash(f"出力に失敗しました: {exc}", "error")
-            return redirect(url_for("ledger_completion_view", import_id=import_id))
+            return redirect(url_for("ledger_completion_view", import_id=import_id, month=month))
         return redirect(url_for("download", filename=output.name))
 
     @app.route("/ledger-merge", methods=["POST"])

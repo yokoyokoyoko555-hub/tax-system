@@ -437,6 +437,42 @@ class LedgerCompletionTests(unittest.TestCase):
         self.assertEqual(3, len(rows))
         self.assertAlmostEqual(11000, sum(float(r["金額"]) for r in rows))
 
+    def test_export_by_month_writes_only_that_month_with_integer_numbers(self):
+        self.app.import_inventory_products(
+            self.write_inventory_products([
+                {"商品名": f"テストカード{i}", "在庫数": "1", "仕入": "1", "販売価格": str(300 + i * 100)}
+                for i in range(60)
+            ]),
+            as_of="2026-05",
+        )
+        path = self.root / "two_months.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            for date_text, name in (("2026-05-01", "客A"), ("2026-06-01", "客B")):
+                writer.writerow(dict(zip(LEDGER_COLUMNS, [
+                    date_text, name, "", "1985-01-01", "住所", "000", "", "", "", "11000", "備考X",
+                ])))
+        ledger_id = self.app.import_ledger(path)
+        self.app.complete_ledger_breakdown_for_month(ledger_id, "2026-05")      # June stays unresolved
+
+        with self.assertRaises(ValueError):
+            self.app.export_completed_ledger(ledger_id, self.root / "all.csv")             # all months: June blocks it
+        with self.assertRaises(ValueError):
+            self.app.export_completed_ledger(ledger_id, self.root / "june.csv", month="2026-06")
+
+        output = self.root / "may.csv"
+        self.app.export_completed_ledger(ledger_id, output, month="2026-05")
+        with output.open(encoding="utf-8-sig") as fh:
+            rows = list(csv.DictReader(fh))
+        self.assertEqual(list(LEDGER_COLUMNS), list(rows[0].keys()))
+        self.assertTrue(all(r["日時"].startswith("2026-05") for r in rows))
+        self.assertGreaterEqual(len(rows), 2)
+        self.assertAlmostEqual(11000, sum(float(r["金額"]) for r in rows))
+        for row in rows:
+            for column in ("個数", "単価", "金額"):
+                self.assertNotIn(".0", row[column])                                  # 1 not 1.0
+
     def test_export_blocked_when_unresolved(self):
         self.import_inventory_for("2026-05")
         ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))

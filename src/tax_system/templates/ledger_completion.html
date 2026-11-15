@@ -217,8 +217,16 @@
 {% endfor %}
 
 <form method="post" action="{{ url_for('ledger_completion_export', import_id=imp.id) }}">
-  <button type="submit" class="button" {% if not all_resolved %}disabled{% endif %}>内訳を復元した古物台帳を出力する</button>
-  {% if not all_resolved %}<p class="muted">すべての行の残額が0円になってから出力できます。</p>{% endif %}
+  <input type="hidden" name="month" value="{{ month or '' }}">
+  <button type="submit" class="button" {% if not all_resolved %}disabled{% endif %}>
+    {% if month %}{{ month }}の分だけ、{% endif %}内訳を復元した古物台帳を出力する
+  </button>
+  {% if month %}
+    <p class="muted">{{ month }}の行だけを、取込元と同じ形式（日時・名前・…・商品名・個数・単価・金額・備考）のCSVで出力します。</p>
+  {% else %}
+    <p class="muted">全期間をまとめて出力します。月ごとに出力したいときは、上で月を選んでください。</p>
+  {% endif %}
+  {% if not all_resolved %}<p class="muted">{% if month %}{{ month }}の{% endif %}すべての行の残額が0円になってから出力できます。</p>{% endif %}
 </form>
 
 {% endif %}
