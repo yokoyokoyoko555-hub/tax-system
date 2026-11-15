@@ -1313,21 +1313,29 @@ class BuildRandomLedgerBreakdownTests(unittest.TestCase):
             price = prices[item["product"]]
             self.assertTrue(price * 0.5 - 0.01 <= item["unit_cost"] <= price * 0.9 + 0.01)
 
-    def test_a_larger_remainder_is_split_across_two_to_five_different_cards_with_similar_ratios(self):
+    def test_looks_like_a_real_ledger_more_kinds_for_bigger_totals_round_prices_similar_ratios(self):
         import random
         prices = {f"カード{i}": 200 + i * 130 for i in range(150)}       # 200 .. ~19500
-        counts = set()
-        for seed in range(40):
-            remainder = random.Random(seed).choice([3000, 7777, 12345, 20000, 48000])
+        kinds: dict[int, list[int]] = {}
+        quantities = set()
+        for seed in range(60):
+            remainder = [3000, 7770, 12340, 20000, 48000][seed % 5]
             items = build_random_ledger_breakdown(remainder, prices, rng=random.Random(seed))
-            counts.add(len(items))
+            kinds.setdefault(remainder, []).append(len(items))
             self.assertAlmostEqual(remainder, sum(i["amount"] for i in items), delta=0.5)
             self.assertEqual(len(items), len({i["product"] for i in items}))       # different cards
-            self.assertTrue(2 <= len(items) <= 5)
+            self.assertGreaterEqual(len(items), 2)
+            for item in items:
+                self.assertAlmostEqual(item["amount"], item["unit_cost"] * item["qty"], delta=0.01)
+                self.assertEqual(0, item["unit_cost"] % 10)                         # round unit prices
+                quantities.add(item["qty"])
             ratios = [i["unit_cost"] / prices[i["product"]] for i in items]
             self.assertTrue(all(0.5 - 0.001 <= r <= 0.9 + 0.001 for r in ratios))
-            self.assertLessEqual(max(ratios) - min(ratios), 0.4)                    # no big divergence
-        self.assertTrue(len(counts) >= 3)                                           # varies 2..5
+            self.assertLessEqual(max(ratios) - min(ratios), 0.15)                   # no big divergence
+        average = {total: sum(v) / len(v) for total, v in kinds.items()}
+        self.assertGreater(average[48000], average[3000] + 3)                       # bigger total -> more kinds
+        self.assertIn(1, quantities)
+        self.assertTrue(any(q >= 2 for q in quantities))                            # sometimes several of a card
 
     def test_returns_none_for_nonpositive_remainder_or_no_prices(self):
         self.assertIsNone(build_random_ledger_breakdown(0, {"A": 100}))

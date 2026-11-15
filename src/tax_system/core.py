@@ -4,6 +4,7 @@ import bisect
 import csv
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -170,6 +171,142 @@ def _exact_candidates(remainder: float, sorted_prices: list[tuple[float, str]], 
     return None
 
 
+# 実際の古物台帳（買取の明細）の傾向に合わせるための定数。合計金額の帯ごとの、1回の買取に
+# 入るカードの種類数の範囲（実データでは、合計が大きいほど種類数が増える）。
+_KIND_COUNT_BANDS = [
+    (300, (1, 2)), (1000, (2, 5)), (5000, (2, 8)), (20000, (3, 11)),
+    (100000, (5, 15)), (float("inf"), (12, 42)),
+]
+# 数量の出やすさ（実データでは1枚が過半数で、2〜4枚が少し、20枚のまとめ買いもある）
+_QTY_CHOICES = [1, 2, 3, 4, 5, 6, 8, 10, 20]
+_QTY_WEIGHTS = [55, 14, 8, 7, 3, 2, 2, 2, 7]
+
+
+def _nice_unit_price(price: float, ratio: float) -> float:
+    """販売価格priceの50〜90%に収まる範囲で、ratio（掛け率）に近い「きりのよい単価」を返す。
+    実際の台帳の単価は10円単位がほぼすべてで、100円単位が多いので、まず100・50・10円単位の
+    順に、範囲内に収まる最も大きな刻みを使う。
+    """
+    low, high = price * 0.5, price * 0.9
+    target = price * ratio
+    if price < 100:
+        steps = (10, 5, 1)
+    elif price < 300:
+        steps = (50, 10, 5, 1)
+    else:
+        steps = (100, 50, 10, 5, 1)
+    for step in steps:
+        first = math.ceil(low / step - 1e-9) * step
+        last = math.floor(high / step + 1e-9) * step
+        if first <= last:
+            return float(min(max(round(target / step) * step, first), last))
+    return float(round(min(max(target, low), high)))
+
+
+def _last_card_candidates(left: float, sorted_prices: list[tuple[float, str]], prices: list[float],
+                          ratio: float, exclude: set[str], max_qty: int) -> tuple[int, list[str], float] | None:
+    """残額leftを「商品1種類×数量」でぴったり、しかも単価が整数（10の倍数で割り切れるなら
+    10の倍数）になるように説明できる組み合わせを探す。掛け率がratio（その買取の掛け率）に
+    最も近くなる数量・商品を選ぶ。(数量, 商品名のリスト, 掛け率のずれ) を返す。
+    """
+    if not float(left).is_integer():
+        return None
+    total = int(left)
+    best: tuple[float, int, list[str]] | None = None
+    for qty in range(1, max_qty + 1):
+        if total % qty:
+            continue
+        unit = total // qty
+        if total % 10 == 0 and unit % 10:
+            continue
+        lo = bisect.bisect_left(prices, unit / 0.9 - 0.01)
+        hi = bisect.bisect_right(prices, unit / 0.5 + 0.01)
+        found = [(name, abs(unit / price - ratio)) for price, name in sorted_prices[lo:hi]
+                 if price > 0 and name not in exclude]
+        if not found:
+            continue
+        deviation = min(d for _, d in found)
+        if best is None or deviation < best[0] - 1e-9:
+            best = (deviation, qty, [name for name, d in found if d <= deviation + 0.03])
+        if deviation <= 0.05:
+            break
+    if best is None:
+        return None
+    return best[1], best[2], best[0]
+
+
+def _build_realistic_breakdown(remainder: float, sell_prices: dict[str, float], sorted_prices: list[tuple[float, str]],
+                               rng: random.Random, max_qty: int = 60) -> list[dict[str, Any]] | None:
+    """実際の古物台帳に似せた内訳を作る。合計が大きいほど種類数が多く、金額は一部の高いカードと
+    多数の安いカードに偏り、単価はきりのよい金額、数量は1枚が多く時々まとめ買い、にする。
+    1回の買取の中では掛け率をそろえ、各単価は販売価格の50〜90%に収め、合計は残額と一致させる。
+    """
+    prices = [price for price, _ in sorted_prices]
+    for band_limit, (kind_low, kind_high) in _KIND_COUNT_BANDS:
+        if remainder < band_limit:
+            break
+    best: tuple[float, list[dict[str, Any]]] | None = None
+    for _ in range(30):
+        count = min(rng.randint(kind_low, kind_high), max(1, int(remainder // 40)))
+        ratio = rng.uniform(0.55, 0.85)
+        weights = sorted((rng.paretovariate(1.3) for _ in range(count)), reverse=True)
+        total_weight = sum(weights)
+        used: set[str] = set()
+        items: list[dict[str, Any]] = []
+        left = float(remainder)
+        ok = True
+        for n in range(count - 1):
+            share = remainder * weights[n] / total_weight
+            qty = rng.choices(_QTY_CHOICES, _QTY_WEIGHTS)[0]
+            qty = max(1, min(qty, int(share // 10)))
+            price_target = share / qty / ratio
+            pool: list[str] = []
+            for spread in (0.3, 0.6, 1.0):
+                lo = bisect.bisect_left(prices, price_target * (1 - spread))
+                hi = bisect.bisect_right(prices, price_target * (1 + spread))
+                pool = [name for _, name in sorted_prices[lo:hi] if name not in used]
+                if pool:
+                    break
+            if not pool:
+                ok = False
+                break
+            name = rng.choice(pool)
+            unit = _nice_unit_price(sell_prices[name], ratio)
+            if unit * qty > left - 10:
+                qty = 1
+            if unit * qty > left - 10:
+                ok = False
+                break
+            items.append({"product": name, "qty": qty, "unit_cost": unit, "amount": unit * qty})
+            used.add(name)
+            left = round(left - unit * qty, 2)
+        if not ok or left <= 0:
+            continue
+        last = (_last_card_candidates(left, sorted_prices, prices, ratio, used, 20)
+                or _last_card_candidates(left, sorted_prices, prices, ratio, used, max_qty))
+        if last is None and not float(left).is_integer():
+            last_old = _exact_candidates(left, sorted_prices, max_qty, exclude=used)
+            if last_old:
+                qty, found = last_old
+                last = (qty, [name for name, _ in found], 0.0)
+        if last is None:
+            continue
+        qty, names, _ = last
+        name = rng.choice(names)
+        unit = round(left / qty, 2)
+        candidate = items + [{"product": name, "qty": qty, "unit_cost": unit, "amount": round(unit * qty, 2)}]
+        ratios = [c["unit_cost"] / sell_prices[c["product"]] for c in candidate]
+        spread = max(ratios) - min(ratios)
+        if best is None or spread < best[0]:
+            best = (spread, candidate)
+        if spread <= 0.12:
+            break
+    if best is None:
+        return None
+    rng.shuffle(best[1])
+    return best[1]
+
+
 def build_random_ledger_breakdown(remainder: float, sell_prices: dict[str, float],
                                   rng: random.Random | None = None, max_qty: int = 60) -> list[dict[str, Any]] | None:
     """残額を期末在庫表の商品で埋める内訳を、ランダムに作る。商品名は期末在庫表にある名前だけを
@@ -186,6 +323,11 @@ def build_random_ledger_breakdown(remainder: float, sell_prices: dict[str, float
     sorted_prices = sorted((price, name) for name, price in sell_prices.items() if price > 0)
     prices = [price for price, _ in sorted_prices]
 
+    realistic = _build_realistic_breakdown(remainder, sell_prices, sorted_prices, rng, max_qty)
+    if realistic:
+        return realistic
+
+    # 実際の台帳に似せた内訳を作れなかった場合のみ、従来の方法（2〜5種類・数量1）に任せる
     if remainder >= 1000:
         for _ in range(30):
             count = rng.randint(2, max(2, min(5, int(remainder // 500))))
