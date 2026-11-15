@@ -606,6 +606,72 @@ class LedgerCompletionTests(unittest.TestCase):
         self.assertAlmostEqual(11000, sum(i["amount"] for i in entry["manual_items"]), delta=0.5)
         self.assertGreaterEqual(len(entry["manual_items"]), 2)
 
+    def _restored_single_row(self):
+        self.app.import_inventory_products(
+            self.write_inventory_products([
+                {"商品名": f"テストカード{i}", "在庫数": "1", "仕入": "1", "販売価格": str(300 + i * 100)}
+                for i in range(60)
+            ]),
+            as_of="2026-05",
+        )
+        ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))
+        self.app.complete_ledger_breakdown_for_month(ledger_id, "2026-05")
+        return ledger_id, self.app.propose_ledger_breakdown(ledger_id)[0]
+
+    def test_a_manual_item_can_be_edited_by_qty_unit_cost_or_amount(self):
+        ledger_id, entry = self._restored_single_row()
+        item = entry["manual_items"][0]
+
+        self.app.update_ledger_item(item["id"], 3, 100)                  # qty x unit -> amount
+        edited = self.app.propose_ledger_breakdown(ledger_id)[0]["manual_items"][0]
+        self.assertEqual((3, 100, 300), (edited["qty"], edited["unit_cost"], edited["amount"]))
+
+        self.app.update_ledger_item(item["id"], 3, 100, 450)             # amount wins; unit is back-calculated
+        edited = self.app.propose_ledger_breakdown(ledger_id)[0]["manual_items"][0]
+        self.assertEqual((3, 150, 450), (edited["qty"], edited["unit_cost"], edited["amount"]))
+        self.assertFalse(self.app.propose_ledger_breakdown(ledger_id)[0]["resolved"])   # remainder changed
+
+        with self.assertRaises(ValueError):
+            self.app.update_ledger_item(item["id"], 0, 100)
+        with self.assertRaises(ValueError):
+            self.app.update_ledger_item(99999, 1, 100)
+
+    def test_confirming_locks_resolved_rows_and_excludes_them_from_redo(self):
+        ledger_id, entry = self._restored_single_row()
+        self.assertFalse(entry["confirmed"])
+        self.assertEqual(1, self.app.confirm_resolved_ledger_rows(ledger_id))
+        self.assertEqual(0, self.app.confirm_resolved_ledger_rows(ledger_id))     # nothing left to confirm
+        entry = self.app.propose_ledger_breakdown(ledger_id)[0]
+        self.assertTrue(entry["confirmed"])
+        before = [(i["product"], i["qty"], i["amount"]) for i in entry["manual_items"]]
+
+        item_id = entry["manual_items"][0]["id"]
+        with self.assertRaises(ValueError):
+            self.app.update_ledger_item(item_id, 1, 100)
+        with self.assertRaises(ValueError):
+            self.app.remove_ledger_item(item_id)
+        with self.assertRaises(ValueError):
+            self.app.set_ledger_total(ledger_id, entry["row_no"], 5000)
+        with self.assertRaises(ValueError):
+            self.app.add_ledger_item(ledger_id, entry["row_no"], "テストカード0", 1)
+        redone = self.app.complete_ledger_breakdown_for_month(ledger_id, "2026-05", redo=True)
+        self.assertEqual(0, redone["added"])                                      # confirmed row is not redone
+        after = self.app.propose_ledger_breakdown(ledger_id)[0]
+        self.assertEqual(before, [(i["product"], i["qty"], i["amount"]) for i in after["manual_items"]])
+
+        self.app.unconfirm_ledger_row(ledger_id, entry["row_no"])                 # unlock -> editable again
+        self.assertFalse(self.app.propose_ledger_breakdown(ledger_id)[0]["confirmed"])
+        self.app.update_ledger_item(item_id, 1, 100)
+
+    def test_only_resolved_rows_are_confirmed(self):
+        self.app.import_inventory_products(
+            self.write_inventory_products([{"商品名": "テストカードA", "在庫数": "1", "仕入": "1", "販売価格": "10000"}]),
+            as_of="2026-05",
+        )
+        ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))        # unresolved: no items yet
+        self.assertEqual(0, self.app.confirm_resolved_ledger_rows(ledger_id))
+        self.assertFalse(self.app.propose_ledger_breakdown(ledger_id)[0]["confirmed"])
+
     def test_bulk_completion_leaves_over_accounted_and_no_inventory_rows_alone(self):
         ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))   # May row, no inventory at all
 

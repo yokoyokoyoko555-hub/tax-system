@@ -52,13 +52,46 @@
 
 <p>
   {% if unresolved_count %}
-    <strong class="level-error">残額が0円になっていない行: {{ unresolved_count }}件</strong>（上に表示しています。残り{{ breakdown|length - unresolved_count }}件は残額0円です）
+    <strong class="level-error">残額が0円になっていない行: {{ unresolved_count }}件</strong>（上に表示しています）
   {% else %}
     <strong>すべての行の残額が0円です（{{ breakdown|length }}件）</strong>
   {% endif %}
+  ／ 残額0円・未確定 {{ unconfirmed_resolved_count }}件 ／ 確定済み {{ confirmed_count }}件
 </p>
+{% set scope = (month ~ 'の') if month else '' %}
+<form method="post" action="{{ url_for('ledger_completion_confirm', import_id=imp.id) }}"
+      onsubmit="return confirm('{{ scope }}残額が0円の行（{{ unconfirmed_resolved_count }}件）を確定します。確定した行は、内訳や金額を変更できなくなります（あとで1行ずつ解除できます）。よろしいですか？');">
+  <input type="hidden" name="month" value="{{ month or '' }}">
+  <button type="submit" class="button" {% if not unconfirmed_resolved_count %}disabled{% endif %}>
+    残額0円の行をすべて確定する（{{ unconfirmed_resolved_count }}件）
+  </button>
+  <span class="muted">確定した行は下にまとめて表示し、やり直し・まとめて復元の対象から外れます。</span>
+</form>
 
 {% for b in breakdown %}
+{% if b.confirmed %}
+<details class="card success-box">
+  <summary><strong>{{ b.row_no }}行目 — {{ b.name }} / {{ b.date }} / 合計 {{ (b.total | num ~ "円") if b.total is not none else "-" }}</strong>（確定済み）</summary>
+  <table>
+    <thead><tr><th>商品名</th><th>数量</th><th>単価</th><th>金額</th><th>由来</th></tr></thead>
+    <tbody>
+      {% for item in b.known_items %}
+      <tr><td>{{ item.product }}</td><td>{{ item.qty | num }}</td>
+          <td>{{ (item.unit_cost | num) if item.unit_cost is not none else "在庫表になし" }}</td>
+          <td>{{ (item.amount | num) if item.amount is not none else "-" }}</td><td>相対表（確定）</td></tr>
+      {% endfor %}
+      {% for item in b.manual_items %}
+      <tr><td>{{ item.product }}</td><td>{{ item.qty | num }}</td><td>{{ item.unit_cost | num }}</td>
+          <td>{{ item.amount | num }}</td><td>手動</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <form method="post" action="{{ url_for('ledger_completion_unconfirm', import_id=imp.id, row_no=b.row_no) }}">
+    <input type="hidden" name="month" value="{{ month or '' }}">
+    <button type="submit" class="button small">確定を解除する</button>
+  </form>
+</details>
+{% else %}
 <div class="card {{ 'success-box' if b.resolved else '' }}">
   <h2>{{ b.row_no }}行目 — {{ b.name }} / {{ b.date }} / 合計 {{ (b.total | num ~ "円") if b.total is not none else "（金額が未入力）" }}</h2>
   <form method="post" action="{{ url_for('ledger_completion_set_total', import_id=imp.id, row_no=b.row_no) }}"
@@ -87,12 +120,21 @@
       {% for item in b.manual_items %}
       <tr>
         <td>{{ item.product }}</td>
-        <td>{{ item.qty | num }}</td>
-        <td>{{ item.unit_cost | num }}</td>
-        <td>{{ item.amount | num }}</td>
+        <td><input type="number" name="qty" form="edit{{ item.id }}" step="any" min="0" required
+                   value="{{ item.qty | num }}" style="width:5.5em;"></td>
+        <td><input type="number" name="unit_cost" form="edit{{ item.id }}" step="any" min="0" required
+                   value="{{ item.unit_cost | num }}" style="width:7em;"></td>
+        <td><input type="number" name="amount" form="edit{{ item.id }}" step="any" min="0" required
+                   value="{{ item.amount | num }}" style="width:8em;"></td>
         <td>手動</td>
-        <td>
-          <form method="post" action="{{ url_for('ledger_completion_remove', import_id=imp.id, row_no=b.row_no, item_id=item.id) }}">
+        <td style="white-space:nowrap;">
+          <form id="edit{{ item.id }}" method="post" style="display:inline;"
+                action="{{ url_for('ledger_completion_edit_item', import_id=imp.id, row_no=b.row_no, item_id=item.id) }}">
+            <input type="hidden" name="month" value="{{ month or '' }}">
+            <button type="submit" class="button small">保存</button>
+          </form>
+          <form method="post" style="display:inline;"
+                action="{{ url_for('ledger_completion_remove', import_id=imp.id, row_no=b.row_no, item_id=item.id) }}">
             <input type="hidden" name="month" value="{{ month or '' }}">
             <button type="submit" class="button small">削除</button>
           </form>
@@ -171,6 +213,7 @@
   {% endif %}
   {% endif %}
 </div>
+{% endif %}
 {% endfor %}
 
 <form method="post" action="{{ url_for('ledger_completion_export', import_id=imp.id) }}">

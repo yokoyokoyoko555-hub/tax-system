@@ -563,6 +563,10 @@ class TaxSystem:
                 CREATE TABLE IF NOT EXISTS ledger_duplicate_dismissals(
                   key_json TEXT PRIMARY KEY, created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS ledger_confirmed(
+                  ledger_import_id INTEGER NOT NULL, ledger_row_no INTEGER NOT NULL, created_at TEXT NOT NULL,
+                  PRIMARY KEY(ledger_import_id, ledger_row_no)
+                );
                 """
             )
             # 古物台帳は取込のたびに全ての生データから結合し直す（取込IDが変わる）ため、
@@ -2099,6 +2103,11 @@ class TaxSystem:
             manual_items = db.execute(
                 "SELECT * FROM ledger_items WHERE ledger_import_id=? ORDER BY id", (ledger_import_id,)
             ).fetchall()
+            confirmed_rows = {
+                r["ledger_row_no"] for r in db.execute(
+                    "SELECT ledger_row_no FROM ledger_confirmed WHERE ledger_import_id=?", (ledger_import_id,)
+                ).fetchall()
+            }
 
         inventory_cache: dict[str | None, dict[str, float]] = {}
 
@@ -2182,6 +2191,7 @@ class TaxSystem:
                 "row_no": row_no, "name": name, "date": purchase_date, "month": row_month, "total": total,
                 "known_items": known, "manual_items": manual, "remainder": remainder,
                 "resolved": remainder is not None and abs(remainder) < 0.5,
+                "confirmed": row_no in confirmed_rows,
                 "inventory_available": bool(inventory),
             })
         return results
@@ -2211,6 +2221,7 @@ class TaxSystem:
             ).fetchone()
         if not record:
             raise ValueError("対象の行が見つかりません")
+        self._ensure_ledger_row_not_confirmed(ledger_import_id, row_no)
         purchase_date = _to_date(json.loads(record["data_json"]).get("日時"))
         month = f"{purchase_date.year:04d}-{purchase_date.month:02d}" if purchase_date else None
         if unit_cost is not None:
@@ -2237,9 +2248,72 @@ class TaxSystem:
                 (ledger_import_id, row_no, product, qty, cost, cost * qty, "manual", now),
             )
 
+    def _ensure_ledger_row_not_confirmed(self, ledger_import_id: int, row_no: int) -> None:
+        with closing(self.connect()) as db, db:
+            confirmed = db.execute(
+                "SELECT 1 FROM ledger_confirmed WHERE ledger_import_id=? AND ledger_row_no=?",
+                (ledger_import_id, row_no),
+            ).fetchone()
+        if confirmed:
+            raise ValueError(f"{row_no}行目は確定済みです。変更するには先に「確定を解除」してください")
+
     def remove_ledger_item(self, item_id: int) -> None:
         with closing(self.connect()) as db, db:
+            item = db.execute(
+                "SELECT ledger_import_id, ledger_row_no FROM ledger_items WHERE id=? AND source='manual'",
+                (item_id,),
+            ).fetchone()
+        if not item:
+            return
+        self._ensure_ledger_row_not_confirmed(item["ledger_import_id"], item["ledger_row_no"])
+        with closing(self.connect()) as db, db:
             db.execute("DELETE FROM ledger_items WHERE id=? AND source='manual'", (item_id,))
+
+    def update_ledger_item(self, item_id: int, qty: float, unit_cost: float, amount: float | None = None) -> None:
+        """手動の内訳1件の数量・単価・金額を直す。金額が今の値と違う値で渡された場合は金額を
+        優先する（金額が数量×単価と合わなければ、単価は金額÷数量に直す）。そうでなければ
+        金額＝数量×単価にする。商品名は変えない（期末在庫表にある名前だけを使う）。
+        確定済みの行は変更できない。
+        """
+        if qty <= 0:
+            raise ValueError("数量は0より大きい値で入力してください")
+        if unit_cost < 0 or (amount is not None and amount < 0):
+            raise ValueError("単価・金額は0以上で入力してください")
+        with closing(self.connect()) as db, db:
+            item = db.execute("SELECT * FROM ledger_items WHERE id=? AND source='manual'", (item_id,)).fetchone()
+        if not item:
+            raise ValueError("対象の内訳が見つかりません")
+        self._ensure_ledger_row_not_confirmed(item["ledger_import_id"], item["ledger_row_no"])
+        if amount is not None and abs(amount - item["amount"]) > 0.005:
+            new_amount = amount
+            new_unit = unit_cost if abs(amount - qty * unit_cost) < 0.005 else round(amount / qty, 2)
+        else:
+            new_unit = unit_cost
+            new_amount = round(qty * unit_cost, 2)
+        with closing(self.connect()) as db, db:
+            db.execute("UPDATE ledger_items SET qty=?, unit_cost=?, amount=? WHERE id=?",
+                       (qty, new_unit, new_amount, item_id))
+
+    def confirm_resolved_ledger_rows(self, ledger_import_id: int, month: str | None = None) -> int:
+        """残額が0円になっている行（まだ確定していないもの）をまとめて確定する。確定した行は、
+        内訳の追加・編集・削除や元の金額の変更ができなくなり、やり直しの対象からも外れる。
+        確定した件数を返す。
+        """
+        now = datetime.now().isoformat(timespec="seconds")
+        rows = [
+            (ledger_import_id, e["row_no"], now)
+            for e in self.propose_ledger_breakdown(ledger_import_id, month=month)
+            if e["resolved"] and not e["confirmed"]
+        ]
+        if rows:
+            with closing(self.connect()) as db, db:
+                db.executemany("INSERT OR IGNORE INTO ledger_confirmed VALUES(?,?,?)", rows)
+        return len(rows)
+
+    def unconfirm_ledger_row(self, ledger_import_id: int, row_no: int) -> None:
+        with closing(self.connect()) as db, db:
+            db.execute("DELETE FROM ledger_confirmed WHERE ledger_import_id=? AND ledger_row_no=?",
+                       (ledger_import_id, row_no))
 
     def set_ledger_total(self, ledger_import_id: int, row_no: int, total: float) -> None:
         """古物台帳の行の元の金額（合計）を入力・修正する。金額が空欄の行は残額を計算できず
@@ -2248,6 +2322,7 @@ class TaxSystem:
         """
         if total < 0:
             raise ValueError("金額は0以上で入力してください")
+        self._ensure_ledger_row_not_confirmed(ledger_import_id, row_no)
         with closing(self.connect()) as db, db:
             record = db.execute(
                 "SELECT r.id, r.data_json FROM records r JOIN imports i ON r.import_id=i.id "
@@ -2273,7 +2348,8 @@ class TaxSystem:
         added = no_match = negative = no_inventory = no_total = 0
         rng = rng or random.Random()
         if redo:
-            rows = [e["row_no"] for e in self.propose_ledger_breakdown(ledger_import_id, month=month)]
+            rows = [e["row_no"] for e in self.propose_ledger_breakdown(ledger_import_id, month=month)
+                    if not e["confirmed"]]
             with closing(self.connect()) as db, db:
                 db.executemany(
                     "DELETE FROM ledger_items WHERE ledger_import_id=? AND ledger_row_no=? AND source='manual'",
@@ -2283,7 +2359,7 @@ class TaxSystem:
         new_rows: list[tuple[Any, ...]] = []
         now = datetime.now().isoformat(timespec="seconds")
         for entry in self.propose_ledger_breakdown(ledger_import_id, month=month):
-            if entry["resolved"]:
+            if entry["resolved"] or entry["confirmed"]:
                 continue
             if entry["remainder"] is None:
                 no_total += 1

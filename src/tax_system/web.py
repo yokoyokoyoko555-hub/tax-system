@@ -439,8 +439,11 @@ def create_app(home: str | Path | None = None) -> Flask:
         months = ts.list_months(import_id)
         breakdown = ts.propose_ledger_breakdown(import_id, month=month)
         unresolved_count = sum(1 for b in breakdown if not b["resolved"])
-        # 残額が0円になっていない行を上に出す（それぞれ元の行番号順は保つ）
-        breakdown = sorted(breakdown, key=lambda b: b["resolved"])
+        confirmed_count = sum(1 for b in breakdown if b["confirmed"])
+        unconfirmed_resolved_count = sum(1 for b in breakdown if b["resolved"] and not b["confirmed"])
+        # 残額が0円になっていない行 → 残額0円で未確定の行 → 確定済みの行 の順に出す
+        # （それぞれ元の行番号順は保つ）
+        breakdown = sorted(breakdown, key=lambda b: (b["confirmed"], b["resolved"]))
         search_row = request.args.get("search_row", type=int)
         query = request.args.get("q", "").strip()
         search_row_month = next((b["month"] for b in breakdown if b["row_no"] == search_row), None)
@@ -452,7 +455,8 @@ def create_app(home: str | Path | None = None) -> Flask:
         return render_template(
             "ledger_completion.html", imp=imp, breakdown=breakdown, month=month, months=months,
             search_row=search_row, query=query, search_results=search_results, all_resolved=all_resolved,
-            suggestion=suggestion, unresolved_count=unresolved_count,
+            suggestion=suggestion, unresolved_count=unresolved_count, confirmed_count=confirmed_count,
+            unconfirmed_resolved_count=unconfirmed_resolved_count,
         )
 
     @app.route("/ledger-completion/<int:import_id>/<int:row_no>/suggest", methods=["POST"])
@@ -519,7 +523,43 @@ def create_app(home: str | Path | None = None) -> Flask:
     def ledger_completion_remove(import_id: int, row_no: int, item_id: int):
         ts = system()
         month = request.form.get("month") or None
-        ts.remove_ledger_item(item_id)
+        try:
+            ts.remove_ledger_item(item_id)
+        except ValueError as exc:
+            flash(f"削除できませんでした: {exc}", "error")
+        return redirect(url_for("ledger_completion_view", import_id=import_id, month=month))
+
+    @app.route("/ledger-completion/<int:import_id>/<int:row_no>/edit/<int:item_id>", methods=["POST"])
+    def ledger_completion_edit_item(import_id: int, row_no: int, item_id: int):
+        ts = system()
+        month = request.form.get("month") or None
+        amount_text = request.form.get("amount", "").strip()
+        try:
+            ts.update_ledger_item(
+                item_id, float(request.form.get("qty", "").strip()), float(request.form.get("unit_cost", "").strip()),
+                float(amount_text) if amount_text else None,
+            )
+        except (ValueError, TypeError) as exc:
+            flash(f"内訳を修正できませんでした: {exc}", "error")
+        else:
+            flash(f"{row_no}行目の内訳を修正しました", "success")
+        return redirect(url_for("ledger_completion_view", import_id=import_id, month=month))
+
+    @app.route("/ledger-completion/<int:import_id>/confirm", methods=["POST"])
+    def ledger_completion_confirm(import_id: int):
+        ts = system()
+        month = request.form.get("month") or None
+        count = ts.confirm_resolved_ledger_rows(import_id, month=month)
+        flash(f"残額が0円の{count}行を確定しました" if count else "確定する行がありません（残額が0円で未確定の行がありません）",
+              "success" if count else "error")
+        return redirect(url_for("ledger_completion_view", import_id=import_id, month=month))
+
+    @app.route("/ledger-completion/<int:import_id>/<int:row_no>/unconfirm", methods=["POST"])
+    def ledger_completion_unconfirm(import_id: int, row_no: int):
+        ts = system()
+        month = request.form.get("month") or None
+        ts.unconfirm_ledger_row(import_id, row_no)
+        flash(f"{row_no}行目の確定を解除しました", "success")
         return redirect(url_for("ledger_completion_view", import_id=import_id, month=month))
 
     @app.route("/ledger-completion/<int:import_id>/export", methods=["POST"])
