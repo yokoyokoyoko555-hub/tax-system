@@ -50,6 +50,14 @@
 <p class="muted">{% if month %}{{ month }}には{% endif %}商品名が空欄の行はありません。</p>
 {% else %}
 
+<p>
+  {% if unresolved_count %}
+    <strong class="level-error">残額が0円になっていない行: {{ unresolved_count }}件</strong>（上に表示しています。残り{{ breakdown|length - unresolved_count }}件は残額0円です）
+  {% else %}
+    <strong>すべての行の残額が0円です（{{ breakdown|length }}件）</strong>
+  {% endif %}
+</p>
+
 {% for b in breakdown %}
 <div class="card {{ 'success-box' if b.resolved else '' }}">
   <h2>{{ b.row_no }}行目 — {{ b.name }} / {{ b.date }} / 合計 {{ (b.total | num ~ "円") if b.total is not none else "（金額が未入力）" }}</h2>

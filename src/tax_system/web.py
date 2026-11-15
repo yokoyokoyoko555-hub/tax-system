@@ -438,6 +438,9 @@ def create_app(home: str | Path | None = None) -> Flask:
         month = request.args.get("month") or None
         months = ts.list_months(import_id)
         breakdown = ts.propose_ledger_breakdown(import_id, month=month)
+        unresolved_count = sum(1 for b in breakdown if not b["resolved"])
+        # 残額が0円になっていない行を上に出す（それぞれ元の行番号順は保つ）
+        breakdown = sorted(breakdown, key=lambda b: b["resolved"])
         search_row = request.args.get("search_row", type=int)
         query = request.args.get("q", "").strip()
         search_row_month = next((b["month"] for b in breakdown if b["row_no"] == search_row), None)
@@ -449,7 +452,7 @@ def create_app(home: str | Path | None = None) -> Flask:
         return render_template(
             "ledger_completion.html", imp=imp, breakdown=breakdown, month=month, months=months,
             search_row=search_row, query=query, search_results=search_results, all_resolved=all_resolved,
-            suggestion=suggestion,
+            suggestion=suggestion, unresolved_count=unresolved_count,
         )
 
     @app.route("/ledger-completion/<int:import_id>/<int:row_no>/suggest", methods=["POST"])
