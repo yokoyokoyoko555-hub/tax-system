@@ -472,6 +472,7 @@ class LedgerCompletionTests(unittest.TestCase):
         for row in rows:
             for column in ("個数", "単価", "金額"):
                 self.assertNotIn(".0", row[column])                                  # 1 not 1.0
+            self.assertEqual("備考X", row["備考"])      # original note only; no restoration trace is written
 
     def test_export_blocked_when_unresolved(self):
         self.import_inventory_for("2026-05")

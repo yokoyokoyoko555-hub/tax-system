@@ -2618,15 +2618,13 @@ class TaxSystem:
                 if not entry:
                     writer.writerow(data)
                     continue
-                original_total = data.get("金額")
+                # 復元した痕跡（注記など）は出力に残さない。備考は元の台帳のままにする。
                 for item in entry["known_items"] + entry["manual_items"]:
                     row = dict(data)
                     row["商品名"] = item["product"]
                     row["個数"] = _csv_number(item["qty"])
                     row["単価"] = _csv_number(item["unit_cost"])
                     row["金額"] = _csv_number(item["amount"])
-                    note = f"内訳復元（元合計{original_total}円・{'相対表' if item['source'] == 'comparison' else '手動'}）"
-                    row["備考"] = f"{data.get('備考') or ''} {note}".strip()
                     writer.writerow(row)
         return output
 
