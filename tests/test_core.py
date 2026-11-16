@@ -521,6 +521,42 @@ class LedgerCompletionTests(unittest.TestCase):
                 self.assertNotIn(".0", row[column])                                  # 1 not 1.0
             self.assertEqual("備考X", row["備考"])      # original note only; no restoration trace is written
 
+    def test_the_general_ledger_export_expands_restored_rows_and_keeps_unrestored_ones_as_is(self):
+        self.app.import_inventory_products(
+            self.write_inventory_products([
+                {"商品名": f"テストカード{i}", "在庫数": "1", "仕入": "1", "販売価格": str(300 + i * 100)}
+                for i in range(60)
+            ]),
+            as_of="2026-05",
+        )
+        path = self.root / "two_months.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n")
+            writer.writeheader()
+            for date_text, name in (("2026-05-01", "客A"), ("2026-06-01", "客B")):
+                writer.writerow(dict(zip(LEDGER_COLUMNS, [
+                    date_text, name, "", "1985-01-01", "住所", "000", "", "", "", "11000", "備考X",
+                ])))
+        ledger_id = self.app.import_ledger(path)
+        self.app.complete_ledger_breakdown_for_month(ledger_id, "2026-05")       # June is not restored
+
+        may, june = self.root / "may.csv", self.root / "june.csv"
+        self.app.export(ledger_id, may, preview=False, month="2026-05")
+        self.app.export(ledger_id, june, preview=False, month="2026-06")
+
+        with may.open(encoding="utf-8-sig") as fh:
+            rows = list(csv.DictReader(fh))
+        self.assertGreaterEqual(len(rows), 2)
+        self.assertTrue(all(r["商品名"] for r in rows))                               # product names are filled in
+        self.assertTrue(all(r["個数"] and r["単価"] and r["金額"] for r in rows))
+        self.assertAlmostEqual(11000, sum(float(r["金額"]) for r in rows))
+        self.assertTrue(all(r["備考"] == "備考X" for r in rows))                       # no restoration trace
+        with june.open(encoding="utf-8-sig") as fh:
+            rows = list(csv.DictReader(fh))
+        self.assertEqual(1, len(rows))                                               # unrestored: original lump row
+        self.assertEqual("", rows[0]["商品名"])
+        self.assertEqual("11000", rows[0]["金額"])
+
     def test_export_blocked_when_unresolved(self):
         self.import_inventory_for("2026-05")
         ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))

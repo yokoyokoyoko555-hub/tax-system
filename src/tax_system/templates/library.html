@@ -94,7 +94,8 @@
         {% endfor %}
       </tbody>
     </table>
-    <p class="muted">エラーが残っている月でも出力できます（内訳復元・チェック画面で内容を確認してから出力してください）。</p>
+    <p class="muted">エラーが残っている月でも出力できます（内訳復元・チェック画面で内容を確認してから出力してください）。
+      内訳を復元して残額が0円になった行は、商品名・個数・単価・金額に展開して出力します。復元が終わっていない行は、元の1行のまま出力します。</p>
     <p>
       <a class="button small" href="{{ url_for('ledger_completion_view', import_id=merged.id) }}">内訳復元（すべての月）</a>
       <a class="button small" href="{{ url_for('validate_import', import_id=merged.id) }}">チェック・出力</a>

@@ -3123,7 +3123,7 @@ class TaxSystem:
         output = Path(output).resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
         if imp["kind"] == "ledger":
-            self._export_ledger(records, output)
+            self._export_ledger(records, output, ledger_import_id=import_id, month=month)
         elif imp["kind"] == "inventory":
             self._export_inventory(records, output)
         else:
@@ -3135,11 +3135,33 @@ class TaxSystem:
                         json_text([c.__dict__ for c in checks]), datetime.now().isoformat(timespec="seconds")))
         return output
 
-    def _export_ledger(self, records: Iterable[sqlite3.Row], output: Path) -> None:
+    def _export_ledger(self, records: Iterable[sqlite3.Row], output: Path,
+                       ledger_import_id: int | None = None, month: str | None = None) -> None:
+        """古物台帳をCSVに書き出す。商品名が空欄の行（合計だけの行）は、内訳の復元が終わって
+        残額が0円になっていれば、復元した商品名・個数・単価・金額の行に展開して書く
+        （備考などは元のまま。復元した痕跡は残さない）。復元が終わっていない行は、金額を
+        失わないよう元の1行のまま書く。
+        """
+        breakdown: dict[int, dict[str, Any]] = {}
+        if ledger_import_id is not None:
+            breakdown = {b["row_no"]: b for b in self.propose_ledger_breakdown(ledger_import_id, month=month)}
         with output.open("w", encoding="utf-8-sig", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=LEDGER_COLUMNS, lineterminator="\r\n", quoting=csv.QUOTE_MINIMAL)
             writer.writeheader()
-            for record in records: writer.writerow(json.loads(record["data_json"]))
+            for record in records:
+                data = json.loads(record["data_json"])
+                entry = breakdown.get(record["row_no"])
+                items = (entry["known_items"] + entry["manual_items"]) if entry and entry["resolved"] else []
+                if not items:
+                    writer.writerow(data)
+                    continue
+                for item in items:
+                    row = dict(data)
+                    row["商品名"] = item["product"]
+                    row["個数"] = _csv_number(item["qty"])
+                    row["単価"] = _csv_number(item["unit_cost"])
+                    row["金額"] = _csv_number(item["amount"])
+                    writer.writerow(row)
 
     def _export_inventory(self, records: Iterable[sqlite3.Row], output: Path) -> None:
         with output.open("w", encoding="utf-8-sig", newline="") as fh:
