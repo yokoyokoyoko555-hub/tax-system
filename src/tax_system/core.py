@@ -2100,7 +2100,7 @@ class TaxSystem:
                 "SELECT * FROM records WHERE import_id=? ORDER BY row_no", (ledger_import_id,)
             ).fetchall()
             comparison_rows = db.execute(
-                "SELECT r.import_id, r.sheet_name, r.data_json FROM records r "
+                "SELECT r.import_id, r.sheet_name, r.row_no, r.data_json FROM records r "
                 "JOIN imports i ON r.import_id = i.id WHERE i.kind='comparison'"
             ).fetchall()
             comparison_metadata = {
@@ -2125,6 +2125,9 @@ class TaxSystem:
 
         comparison_by_key: dict[tuple[str, date | None], list[dict[str, Any]]] = {}
         for row in comparison_rows:
+            # 同じ内容の行が別々の相対表の取込に入っていても、自動では1回にまとめない
+            # （実際に2回分の買取であることもあるため）。どの相対表の行かをリンクで示し、人が確認する。
+            ref = {"import_id": row["import_id"], "sheet": row["sheet_name"], "row_no": row["row_no"]}
             metadata = comparison_metadata.get(row["import_id"], {})
             headers = next((s["headers"] for s in metadata.get("sheets", []) if s["name"] == row["sheet_name"]), None)
             if not headers:
@@ -2157,7 +2160,7 @@ class TaxSystem:
             if not product or not counterparty:
                 continue
             comparison_by_key.setdefault((counterparty, purchase_date), []).append(
-                {"product": product, "qty": qty or 0, "manual_amount": manual_amount}
+                {"product": product, "qty": qty or 0, "manual_amount": manual_amount, "refs": [ref]}
             )
 
         manual_by_row: dict[int, list[dict[str, Any]]] = {}
@@ -2179,14 +2182,26 @@ class TaxSystem:
             inventory = inventory_for(row_month)
 
             known = []
-            for entry in comparison_by_key.get((name, purchase_date), []):
+            entries = comparison_by_key.get((name, purchase_date), [])
+            for entry in entries:
                 cost = inventory.get(entry["product"])
                 qty = entry["qty"]
                 amount = (cost * qty) if cost is not None else entry.get("manual_amount")
                 known.append({
                     "product": entry["product"], "qty": qty, "unit_cost": cost,
-                    "amount": amount, "source": "comparison",
+                    "amount": amount, "source": "comparison", "refs": entry["refs"],
                 })
+            # 在庫表の仕入れ原価で計算した相対表の内訳だけで、すでに元の金額を超えてしまう行は、
+            # 相対表に書かれている実際の買取額（代価）がすべて入っていれば、そちらで計算し直す
+            # （原価が実際の買取額より高いと、残額がマイナスになってしまうため）。
+            # 超えていない行は今まで通りで、すでに残額0円にした行の結果は変わらない。
+            if (total is not None and entries and sum((k["amount"] or 0) for k in known) > total + 0.5
+                    and all(e.get("manual_amount") is not None for e in entries)):
+                known = [{
+                    "product": e["product"], "qty": e["qty"],
+                    "unit_cost": (e["manual_amount"] / e["qty"]) if e["qty"] else None,
+                    "amount": e["manual_amount"], "source": "comparison", "refs": e["refs"],
+                } for e in entries]
             manual = [{
                 "id": item["id"], "product": item["product"], "qty": item["qty"],
                 "unit_cost": item["unit_cost"], "amount": item["amount"], "source": "manual",

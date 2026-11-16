@@ -114,7 +114,11 @@
         <td>{{ (item.unit_cost | num) if item.unit_cost is not none else "在庫表になし" }}</td>
         <td>{{ (item.amount | num) if item.amount is not none else "-" }}</td>
         <td>相対表（確定）</td>
-        <td></td>
+        <td>
+          {% for ref in item.refs %}
+          <a href="{{ url_for('records_view', import_id=ref.import_id, sheet=ref.sheet, row_no=ref.row_no) }}">相対表を開く{% if item.refs|length > 1 %}（{{ loop.index }}）{% endif %}</a>{% if not loop.last %}<br>{% endif %}
+          {% endfor %}
+        </td>
       </tr>
       {% endfor %}
       {% for item in b.manual_items %}
@@ -152,6 +156,9 @@
       残額 0円（合計と一致しています）
     {% elif b.remainder is none %}
       元の金額が未入力のため、残額を計算できません。上の欄に元の金額を入力してください。
+    {% elif b.remainder < -0.5 %}
+      <span class="level-error">残額がマイナス（{{ b.remainder | num }}円）です。相対表の内訳が元の金額を超えています。</span>
+      上の「相対表を開く」で、相対表の行（代価・数量・重複）を確認・修正してください。
     {% else %}
       残額 {{ b.remainder | num }}円（期末在庫表から選んで埋めてください）
     {% endif %}

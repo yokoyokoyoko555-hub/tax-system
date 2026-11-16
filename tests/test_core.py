@@ -437,6 +437,53 @@ class LedgerCompletionTests(unittest.TestCase):
         self.assertEqual(3, len(rows))
         self.assertAlmostEqual(11000, sum(float(r["金額"]) for r in rows))
 
+    def test_comparison_lines_use_the_actual_purchase_price_when_inventory_cost_would_exceed_the_total(self):
+        self.import_inventory_for("2026-05")        # cost: カードA 5000 / カードB 3000
+        ledger_id = self.app.import_ledger(self.write_ledger_lump(6000))
+        self.app.import_comparison(self.write_comparison([
+            (["2026-05-01", "テストカードA", 1, "鈴木一郎", 3500], ["2026-06-01", 1]),
+            (["2026-05-01", "テストカードB", 1, "鈴木一郎", 2500], ["2026-06-02", 1]),
+        ]))
+
+        entry = self.app.propose_ledger_breakdown(ledger_id)[0]
+
+        # at inventory cost the lines total 8000 (> 6000 -> negative); the 代価 (3500 + 2500) is used instead
+        self.assertAlmostEqual(6000, sum(i["amount"] for i in entry["known_items"]))
+        self.assertTrue(entry["resolved"])
+        self.assertAlmostEqual(0, entry["remainder"])
+
+    def test_inventory_cost_is_kept_when_it_does_not_exceed_the_total_or_a_price_is_missing(self):
+        self.import_inventory_for("2026-05")
+        ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))
+        self.app.import_comparison(self.write_comparison([
+            (["2026-05-01", "テストカードA", 1, "鈴木一郎", 3500], ["2026-06-01", 1]),
+            (["2026-05-01", "テストカードB", 1, "鈴木一郎", 2500], ["2026-06-02", 1]),
+        ]))
+        entry = self.app.propose_ledger_breakdown(ledger_id)[0]
+        self.assertAlmostEqual(8000, sum(i["amount"] for i in entry["known_items"]))   # unchanged behavior
+        self.assertAlmostEqual(3000, entry["remainder"])
+
+        low_ledger = self.app.import_ledger(self.write_ledger_lump(6000))
+        self.app.import_comparison(self.write_comparison([
+            (["2026-05-01", "テストカードA", 1, "鈴木一郎", None], ["2026-06-01", 1]),
+        ], name="comparison2.xlsx"))
+        entry = self.app.propose_ledger_breakdown(low_ledger)[0]
+        self.assertTrue(all(i["amount"] is not None for i in entry["known_items"]))
+
+    def test_known_items_carry_a_link_to_their_comparison_row(self):
+        self.import_inventory_for("2026-05")
+        ledger_id = self.app.import_ledger(self.write_ledger_lump(11000))
+        comparison_id = self.app.import_comparison(self.write_comparison([
+            (["2026-05-01", "テストカードA", 1, "鈴木一郎", 5000], ["2026-06-01", 1]),
+        ]))
+
+        item = self.app.propose_ledger_breakdown(ledger_id)[0]["known_items"][0]
+
+        self.assertEqual(1, len(item["refs"]))
+        self.assertEqual(comparison_id, item["refs"][0]["import_id"])
+        self.assertEqual("輸出販売", item["refs"][0]["sheet"])
+        self.assertIsInstance(item["refs"][0]["row_no"], int)
+
     def test_export_by_month_writes_only_that_month_with_integer_numbers(self):
         self.app.import_inventory_products(
             self.write_inventory_products([
