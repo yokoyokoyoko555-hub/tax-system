@@ -683,14 +683,16 @@ def create_app(home: str | Path | None = None) -> Flask:
                 flash("テンプレートを選択してください", "error")
                 return redirect(url_for("build_comparison_view", import_id=import_id))
             try:
-                result = ts.build_comparison(import_id, int(template_id))
+                result = ts.build_comparison(import_id, int(template_id),
+                                             replace_existing=request.form.get("replace") == "1")
             except ValueError as exc:
                 flash(f"組み立てに失敗しました: {exc}", "error")
                 return redirect(url_for("build_comparison_view", import_id=import_id))
             flash(f"相対表を組み立てました（全{result['total']}件中、対応する仕入が見つからなかった行: {result['unmatched']}件）",
                   "success" if result["unmatched"] == 0 else "error")
             return redirect(url_for("validate_import", import_id=result["import_id"]))
-        return render_template("build_comparison.html", imp=imp, templates=templates)
+        return render_template("build_comparison.html", imp=imp, templates=templates,
+                               existing=ts.comparison_builds_of(import_id))
 
     @app.route("/allocations/<int:import_id>")
     def allocations_view(import_id: int):

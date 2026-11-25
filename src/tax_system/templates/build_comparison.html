@@ -20,7 +20,16 @@
       {% endfor %}
     </select>
   </label>
+  {% if existing %}
+  <p class="flash flash-error">
+    この輸出データからは既に相対表を組み立てています（{% for eid in existing %}<a href="{{ url_for('validate_import', import_id=eid) }}">取込ID {{ eid }}</a>{% if not loop.last %}・{% endif %}{% endfor %}）。
+    作り直すと、今の相対表は削除され、手動で紐づけた内容も消えます。続きの作業は、上のリンクから今の相対表を開いて行ってください。
+  </p>
+  <input type="hidden" name="replace" value="1">
+  <button type="submit" class="button">作り直す（取込ID {{ existing|join('・') }} を削除して作り直す）</button>
+  {% else %}
   <button type="submit" class="button">組み立てる</button>
+  {% endif %}
 </form>
 {% endif %}
 

@@ -970,6 +970,66 @@ class BuildComparisonTests(unittest.TestCase):
         self.assertEqual(0, result["unmatched"])
         self.assertEqual([], self.app.validate(result["import_id"]))
 
+    def test_same_day_purchases_use_the_earlier_time_first(self):
+        self.app.import_ledger(self.write_ledger([
+            ["2026-01-01 18:17:33", "夕方さん", "ゆう", "1990-01-01", "匿名住所", "000", "カードX", "1", "1000", "1000", ""],
+            ["2026-01-01 14:07:58", "昼さん", "ひる", "1991-01-01", "匿名住所", "000", "カードX", "1", "1000", "1000", ""],
+        ]))
+        export_id = self.app.import_export_data(self.write_export_data([
+            ["2026-03-01", "カードX", "2000", "1", "2000", "海外顧客1", "銀行振込", "JPY"],
+        ]))
+        result = self.app.build_comparison(export_id, self.register_template())
+        by_row = {a["row_no"]: a for a in self.app.allocate(result["import_id"])}
+        self.assertEqual("昼さん", by_row[2]["ledger"]["name"])
+
+    def test_trailing_management_code_in_export_name_still_matches(self):
+        self.app.import_ledger(self.write_ledger([
+            ["2026-01-01", "Aさん", "えー", "1990-01-01", "匿名住所", "000", "ヤマト【OP16-098】", "1", "1000", "1000", ""],
+        ]))
+        export_id = self.app.record_export_entry([{
+            "年月日": "2026-03-01", "品名": "ヤマト【OP16-098】 [OP16098-03dmg]", "金額": 2000, "数量": 1,
+            "小計": 2000, "相手方名": "海外顧客1", "支払方法": "銀行振込", "通貨": "JPY", "英語名": "Yamato",
+        }], "手入力（テスト）")
+        template_id = self.register_template()
+
+        result = self.app.build_comparison(export_id, template_id)
+        self.assertEqual(0, result["unmatched"])
+        by_row = {a["row_no"]: a for a in self.app.allocate(result["import_id"])}
+        self.assertEqual("Aさん", by_row[2]["ledger"]["name"])
+
+    def test_exact_name_is_preferred_over_stripped_code(self):
+        self.app.import_ledger(self.write_ledger([
+            ["2026-01-01", "Aさん", "えー", "1990-01-01", "匿名住所", "000", "カード [赤]", "1", "1000", "1000", ""],
+            ["2026-01-02", "Bさん", "びー", "1991-01-01", "匿名住所", "000", "カード [赤] [OP01-001]", "1", "1000", "1000", ""],
+        ]))
+        export_id = self.app.import_export_data(self.write_export_data([
+            ["2026-03-01", "カード [赤] [OP01-001]", "2000", "1", "2000", "海外顧客1", "銀行振込", "JPY"],
+        ]))
+        result = self.app.build_comparison(export_id, self.register_template())
+        by_row = {a["row_no"]: a for a in self.app.allocate(result["import_id"])}
+        self.assertEqual("Bさん", by_row[2]["ledger"]["name"])
+
+    def test_rebuild_requires_replace_and_keeps_one_comparison(self):
+        self.app.import_ledger(self.write_ledger([
+            ["2026-01-01", "Aさん", "えー", "1990-01-01", "匿名住所", "000", "カードX", "1", "1000", "1000", ""],
+        ]))
+        export_id = self.app.import_export_data(self.write_export_data([
+            ["2026-03-01", "カードX", "2000", "1", "2000", "海外顧客1", "銀行振込", "JPY"],
+        ]))
+        template_id = self.register_template()
+        first = self.app.build_comparison(export_id, template_id)
+
+        with self.assertRaises(ValueError):
+            self.app.build_comparison(export_id, template_id)
+
+        second = self.app.build_comparison(export_id, template_id, replace_existing=True)
+        self.assertEqual([second["import_id"]], self.app.comparison_builds_of(export_id))
+        with closing(self.app.connect()) as db:
+            count = db.execute("SELECT count(*) FROM imports WHERE kind='comparison'").fetchone()[0]
+        self.assertEqual(1, count)
+        # the purchase used by the deleted build is available again
+        self.assertEqual(0, second["unmatched"])
+
 
 class RawLedgerImportTests(unittest.TestCase):
     def setUp(self):

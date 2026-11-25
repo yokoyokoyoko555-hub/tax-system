@@ -448,6 +448,24 @@ def _to_number(value: Any) -> float | None:
         return None
 
 
+def _to_datetime(value: Any) -> datetime | None:
+    """古物台帳の「日時」を時刻まで読む（先入れ先出しで、同じ日の仕入を時刻順に並べるため）。
+    時刻が無ければ 0:00 とみなす。"""
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    match = re.match(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?", str(value).strip())
+    if not match:
+        return None
+    try:
+        return datetime(*(int(part) if part else 0 for part in match.groups()))
+    except ValueError:
+        return None
+
+
 def _to_date(value: Any) -> date | None:
     if value in (None, ""):
         return None
@@ -497,6 +515,26 @@ def _strip_trailing_blank_columns(fieldnames: list[str] | None) -> list[str]:
     while fieldnames and not fieldnames[-1]:
         fieldnames.pop()
     return fieldnames
+
+
+# 輸出データの品名の末尾に付く管理コード（例: " [OP16098-03dmg]" "[P-152-01]"）。
+# 古物台帳の商品名には付かないため、完全一致で見つからないときだけ外して探し直す。
+_TRAILING_CODE_RE = re.compile(r"\s+\[[0-9A-Za-z][0-9A-Za-z_-]*\]$")
+
+
+def _strip_trailing_code(name: str) -> str:
+    return _TRAILING_CODE_RE.sub("", name.strip()).strip()
+
+
+def _lookup_by_product(by_product: dict[str, list[Any]], name: str | None) -> list[Any]:
+    """商品名で古物台帳の候補を引く。完全一致が無ければ、末尾の管理コードを外した名前で引く。"""
+    if not name:
+        return []
+    found = by_product.get(name)
+    if found:
+        return found
+    stripped = _strip_trailing_code(name)
+    return by_product.get(stripped, []) if stripped != name else []
 
 
 def _index_of(headers: list[Any], name: str, contains: bool = False) -> int | None:
@@ -1526,7 +1564,7 @@ class TaxSystem:
                 })
                 continue
             candidates = (
-                [c for c in ledger_by_product.get(product, []) if c["id"] not in consumed] if product else []
+                [c for c in _lookup_by_product(ledger_by_product, product) if c["id"] not in consumed] if product else []
             )
             strict = [c for c in candidates if c["qty"] == qty and c["date"] == purchase_date]
             pool = strict or candidates
@@ -1704,6 +1742,7 @@ class TaxSystem:
                 "id": row["id"], "name": data.get("名前"), "product": data.get("商品名"),
                 "qty": data.get("個数"), "date": data.get("日時"), "amount": data.get("金額"),
                 "purchase_date": _to_date(data.get("日時")),
+                "purchase_at": _to_datetime(data.get("日時")),
                 "used_amount": used_amount, "remaining": remaining,
             })
         return matches
@@ -1722,8 +1761,8 @@ class TaxSystem:
                 m for m in matches
                 if m["purchase_date"] and f"{m['purchase_date'].year:04d}-{m['purchase_date'].month:02d}" == month
             ]
-        matches.sort(key=lambda m: m["purchase_date"] or date.max)
-        results = [{k: v for k, v in m.items() if k != "purchase_date"} for m in matches[:limit]]
+        matches.sort(key=lambda m: m["purchase_at"] or datetime.max)
+        results = [{k: v for k, v in m.items() if k not in ("purchase_date", "purchase_at")} for m in matches[:limit]]
         return results, len(matches)
 
     def search_ledger_month_summary(self, query: str) -> list[dict[str, Any]]:
@@ -2719,13 +2758,32 @@ class TaxSystem:
             raise ValueError("結合できる古物台帳の取込が2件未満です")
         return self.merge_ledger_imports(raw_ids)
 
-    def build_comparison(self, export_data_import_id: int, template_id: int) -> dict[str, Any]:
+    def comparison_builds_of(self, export_data_import_id: int) -> list[int]:
+        """指定した輸出データから組み立てた相対表の取込IDを返す（古い順）。"""
+        with closing(self.connect()) as db:
+            rows = db.execute("SELECT id, metadata_json FROM imports WHERE kind='comparison' ORDER BY id").fetchall()
+        return [
+            row["id"] for row in rows
+            if (json.loads(row["metadata_json"] or "{}").get("built_from") or {}).get("export_data_import_id")
+            == export_data_import_id
+        ]
+
+    def build_comparison(self, export_data_import_id: int, template_id: int,
+                         replace_existing: bool = False) -> dict[str, Any]:
         """輸出データ（払出し側のみ）と古物台帳から、指定テンプレートの構造に沿った
         相対表（輸出販売シート）を組み立てる。対応する仕入は品名・数量が一致し、
         輸出データの年月日以前の古物台帳記録から、先入先出（最も古い未使用のもの）で
         自動的に対応付ける。対応が見つからない行は品目だけ埋めて残りは空欄にし、
         既存のチェック・仕入対応の確認画面でエラーとして検出・手動対応できるようにする。
+        同じ輸出データから組み立て済みの相対表がある場合は、replace_existing=True のときだけ
+        それを削除して作り直す（押し直すたびに同じ内容の相対表が増えるのを防ぐ。先に削除するので、
+        前回の組み立てで使用済みになっていた古物台帳も対応付けの候補に戻る）。
         """
+        previous = self.comparison_builds_of(export_data_import_id)
+        if previous and not replace_existing:
+            raise ValueError(
+                "この輸出データからは既に相対表（取込ID " + "・".join(map(str, previous)) + "）を組み立て済みです"
+            )
         with closing(self.connect()) as db, db:
             exp_imp = db.execute("SELECT * FROM imports WHERE id=?", (export_data_import_id,)).fetchone()
             if not exp_imp or exp_imp["kind"] != "export_data":
@@ -2733,6 +2791,10 @@ class TaxSystem:
             template = db.execute("SELECT * FROM template_versions WHERE id=?", (template_id,)).fetchone()
             if not template or template["report_type"] != "comparison":
                 raise ValueError("相対表のテンプレートを指定してください")
+            for old_id in previous:
+                db.execute("DELETE FROM allocations WHERE sale_import_id=?", (old_id,))
+                db.execute("DELETE FROM records WHERE import_id=?", (old_id,))
+                db.execute("DELETE FROM imports WHERE id=?", (old_id,))
             export_records = db.execute(
                 "SELECT * FROM records WHERE import_id=? ORDER BY row_no", (export_data_import_id,)
             ).fetchall()
@@ -2778,8 +2840,13 @@ class TaxSystem:
                 "id": row["id"], "name": (data.get("名前") or "").strip(),
                 "product": (data.get("商品名") or "").strip(),
                 "qty": _to_number(data.get("個数")), "date": _to_date(data.get("日時")),
+                "at": _to_datetime(data.get("日時")),
                 "unit": _to_number(data.get("単価")), "amount": _to_number(data.get("金額")),
             })
+
+        ledger_pool_by_product: dict[str, list[dict[str, Any]]] = {}
+        for entry in ledger_pool:
+            ledger_pool_by_product.setdefault(entry["product"], []).append(entry)
 
         consumed: set[int] = set()
         rows_out: list[dict[str, Any]] = []
@@ -2794,11 +2861,11 @@ class TaxSystem:
             sale_date = _to_date(data.get("年月日"))
 
             candidates = [
-                c for c in ledger_pool
-                if c["id"] not in consumed and product and c["product"] == product and c["qty"] == qty
+                c for c in _lookup_by_product(ledger_pool_by_product, product)
+                if c["id"] not in consumed and c["qty"] == qty
                 and (sale_date is None or c["date"] is None or c["date"] <= sale_date)
             ]
-            candidates.sort(key=lambda c: c["date"] or date.max)
+            candidates.sort(key=lambda c: c["at"] or datetime.max)
             match = candidates[0] if candidates else None
             if match:
                 consumed.add(match["id"])
@@ -2884,11 +2951,12 @@ class TaxSystem:
             ledger_by_product.setdefault(product, []).append({
                 "id": row["id"], "name": (data.get("名前") or "").strip(),
                 "qty": _to_number(data.get("個数")), "date": _to_date(data.get("日時")),
+                "at": _to_datetime(data.get("日時")),
                 "unit": _to_number(data.get("単価")), "amount": _to_number(data.get("金額")),
                 "note": (data.get("備考") or "").strip(),
             })
         for candidates in ledger_by_product.values():
-            candidates.sort(key=lambda c: c["date"] or date.max)
+            candidates.sort(key=lambda c: c["at"] or datetime.max)
 
         consumed: set[int] = set()
         filled = 0
@@ -2939,7 +3007,7 @@ class TaxSystem:
                 continue
 
             candidates = [
-                c for c in ledger_by_product.get(descriptor, [])
+                c for c in _lookup_by_product(ledger_by_product, descriptor)
                 if c["id"] not in consumed and (sale_date is None or c["date"] is None or c["date"] <= sale_date)
             ]
             if not candidates:
