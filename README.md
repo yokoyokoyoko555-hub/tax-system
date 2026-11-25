@@ -4,22 +4,33 @@
 
 実データ、テンプレートの複製、SQLiteデータベース、出力ファイルは `.tax-system/` または `outputs/` に保存され、Git管理から除外されます。原本は読み取り専用で参照し、直接更新しません。
 
-## セットアップ
+## 運用しているPC
 
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
+2026-11 に前のノートPC（Windows）からこのPC（Windows + WSL の Ubuntu）へ移管した。**今後はこのPCだけで使う**。前のノートPCでは開かない（データが2つに分かれるため）。
+
+- 置き場所: `~/projects/tax-system`（WSL側）
+- 実データ: `~/projects/tax-system/.tax-system/`（Git管理外。前のPCの `C:\Users\user\.tax-system` をコピーしたもの）
+- テンプレートの保存パスは前のPCの `C:\...` のままDBに残っているが、このPCの `.tax-system/templates/` に自動で読み替える
+
+## セットアップ（初回だけ。このPCでは済んでいる）
+
+```bash
+cd ~/projects/tax-system
+python3 -m venv .venv
+. .venv/bin/activate
 pip install -e .
 tax-system init
 ```
 
 ## Web画面（非エンジニア向け）
 
-```powershell
+```bash
+cd ~/projects/tax-system
+. .venv/bin/activate
 tax-system-web
 ```
 
-起動後、ブラウザで `http://127.0.0.1:5000` を開くと、コマンド入力なしで以下が行えます。
+起動後、Windows のブラウザで `http://127.0.0.1:5000` を開くと（WSL のサーバーにそのままつながる）、コマンド入力なしで以下が行えます。
 
 - テンプレート登録・古物台帳/相対表/期末在庫表の取込
 - 取込データの中身の閲覧（ページ送り対応）
@@ -31,7 +42,9 @@ tax-system-web
 
 ## 基本操作（CLI）
 
-```powershell
+`. .venv/bin/activate` してから実行する。Windows 側のファイルは `/mnt/c/Users/<ユーザー名>/Downloads/...` のように指定できる。
+
+```bash
 # テンプレートを版管理領域へ登録
 tax-system register-template --type comparison --file "相対表.xlsx" --name optcg --version 2025-2026 --effective-from 2025-06-01
 
@@ -51,24 +64,6 @@ tax-system export 2 --template-id 2 --output "outputs/相対表.xlsx"
 
 期末在庫表の取込・仕入対応付け・内訳復元は、現時点ではWeb画面からのみ操作できます。
 
-## 複数PCでの利用（Googleドライブ同期）
-
-Googleドライブの同期フォルダをデータ保存先にすることで、複数のPCから同じデータを扱えます。
-
-```powershell
-# 各PCで一度だけ設定（PowerShellのプロファイルに追記すると毎回設定不要）
-$env:TAX_SYSTEM_HOME = "G:\マイドライブ\tax-system-data"
-
-# 以降は --home を省略しても環境変数の場所が使われる
-tax-system init
-```
-
-**注意（SQLiteの制約）**
-
-- 同時に2台のPCから開かないこと。片方で操作後、Googleドライブの同期が完了してから、もう片方のPCを開いてください。同時に書き込むとDBが壊れたり、`.sqlite3 (競合するコピー)` のような同期エラーファイルが作られる場合があります。
-- 実データ（氏名・住所・電話番号等）がGoogleドライブ上に置かれます。共有設定はリンク共有をオフにし、自分のアカウントのみアクセスできる状態にしてください。
-- 出力先（`--output`）にもGoogleドライブ上のパスを指定すれば、`outputs/` を共有できます。
-
 ## セキュリティ
 
 - `.tax-system/` には実データを含むため、クラウド同期やGit管理の対象にしないでください。
@@ -86,4 +81,10 @@ tax-system init
 - 期末在庫表CSV: UTF-8 BOM付き、`商品名 / 仕入れ原価 / 在庫数` の3列
 
 詳細は [docs/report-output-spec.md](docs/report-output-spec.md) を参照してください。
+
+## 作り方・技術メモ
+
+- Python + Flask（Web画面）+ SQLite + openpyxl。サーバーは 127.0.0.1 のみで待ち受け。
+- 商品名の英語翻訳・内訳復元の組み合わせ提案は OpenAI API（`OPENAI_API_KEY`）を使うが、このPCにはキーを設定していないので、今は手入力に切り替わる。今後、品名の対応表＋プログラム計算／ローカルLLM（Ollama）に置き換える案を検討中。
+- 複数PCでGoogleドライブ同期する運用（`TAX_SYSTEM_HOME`）は、このPC1台運用にしたのでやめた。
 
