@@ -205,7 +205,8 @@
         <input type="hidden" name="row_no" value="{{ row_no }}">
         <input type="hidden" name="ledger_record_id" value="{{ r.id }}">
         <span style="flex:1;">{{ r.name }} / {{ r.product or "（商品名未登録）" }} / {{ r.date }} / 仕入合計{{ r.amount | num }}円
-          {% if r.used_amount %}<strong>（案分済み {{ r.used_amount | num }}円 ／ 残り {{ r.remaining | num if r.remaining is not none else "-" }}円）</strong>{% endif %}</span>
+          {% if r.used_amount %}<strong>（案分済み {{ r.used_amount | num }}円 ／ 残り {{ r.remaining | num if r.remaining is not none else "-" }}円）</strong>{% endif %}
+          {% if r.note %}<br><span class="muted">備考: {{ r.note }}</span>{% endif %}</span>
         <label>数量 <input type="number" name="qty" step="any" min="0" value="{{ purchase_shortfall.shortfall | num if purchase_shortfall else 1 }}" required style="width:5em;"></label>
         <label>{{ "金額（上限 " ~ (r.remaining | num) ~ "円）" if r.remaining is not none else "案分金額" }} <input type="number" name="amount" step="any" min="0"{% if r.remaining is not none %} max="{{ r.remaining }}"{% endif %} required style="width:8em;"></label>
         <button type="submit" class="button small">{{ "不足分を別の行として紐づける" if purchase_shortfall else "この仕入に紐づける" }}</button>

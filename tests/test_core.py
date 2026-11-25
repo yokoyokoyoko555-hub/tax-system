@@ -2561,6 +2561,7 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
 
         self.assertEqual(1, total)
         self.assertEqual("客A", results[0]["name"])
+        self.assertEqual("福袋より案分", results[0]["note"])
 
     def test_search_ledger_can_narrow_to_a_purchase_month(self):
         ledger_id = self.app.import_ledger(self.write_ledger([

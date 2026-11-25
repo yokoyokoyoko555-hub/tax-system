@@ -1741,6 +1741,7 @@ class TaxSystem:
             matches.append({
                 "id": row["id"], "name": data.get("名前"), "product": data.get("商品名"),
                 "qty": data.get("個数"), "date": data.get("日時"), "amount": data.get("金額"),
+                "note": (data.get("備考") or "").strip(),
                 "purchase_date": _to_date(data.get("日時")),
                 "purchase_at": _to_datetime(data.get("日時")),
                 "used_amount": used_amount, "remaining": remaining,
