@@ -525,6 +525,22 @@ class TaxSystem:
         self.templates = self.home / "templates"
         self.db_path = self.home / "tax-system.sqlite3"
 
+    def _template_path(self, stored_path: str) -> Path:
+        """Resolve a stored template path, also when the DB was moved from another PC.
+
+        stored_path is absolute on the PC that registered it (e.g. C:\\Users\\...\\templates\\...).
+        If it does not exist here, look up the part after "templates" under this home.
+        """
+        path = Path(stored_path)
+        if path.exists():
+            return path
+        parts = stored_path.replace("\\", "/").split("/")
+        if "templates" in parts:
+            local = self.templates.joinpath(*parts[len(parts) - 1 - parts[::-1].index("templates") + 1 :])
+            if local.exists():
+                return local
+        return path
+
     def initialize(self) -> None:
         self.templates.mkdir(parents=True, exist_ok=True)
         with closing(self.connect()) as db, db:
@@ -3079,7 +3095,7 @@ class TaxSystem:
 
         output = Path(output).resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
-        self._export_comparison(matched, Path(template["stored_path"]), output, preview)
+        self._export_comparison(matched, self._template_path(template["stored_path"]), output, preview)
 
         now = datetime.now().isoformat(timespec="seconds")
         checks_json = json_text([c.__dict__ for c in checks])
@@ -3128,7 +3144,7 @@ class TaxSystem:
             self._export_inventory(records, output)
         else:
             if not template: raise ValueError("相対表出力には --template-id が必要です")
-            self._export_comparison(records, Path(template["stored_path"]), output, preview)
+            self._export_comparison(records, self._template_path(template["stored_path"]), output, preview)
         with closing(self.connect()) as db, db:
             db.execute("INSERT INTO exports(import_id,template_id,mode,output_name,output_sha256,checks_json,created_at) VALUES(?,?,?,?,?,?,?)",
                        (import_id, template_id, "preview" if preview else "formal", output.name, sha256(output),

@@ -2660,5 +2660,22 @@ class InventoryExportTests(unittest.TestCase):
             self.app.export(import_id, self.root / "bad.csv", preview=True, month="2026-05")
 
 
+class TemplatePathTests(unittest.TestCase):
+    def test_windows_path_from_another_pc_resolves_under_this_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = TaxSystem(Path(tmp) / "home")
+            local = app.templates / "comparison" / "OPTCG" / "2026" / "template.xlsx"
+            local.parent.mkdir(parents=True)
+            local.write_bytes(b"x")
+            stored = r"C:\Users\other\.tax-system\templates\comparison\OPTCG\2026\template.xlsx"
+            self.assertEqual(app._template_path(stored), local)
+
+    def test_existing_path_is_used_as_is(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            existing = Path(tmp) / "t.xlsx"
+            existing.write_bytes(b"x")
+            self.assertEqual(TaxSystem(Path(tmp) / "home")._template_path(str(existing)), existing)
+
+
 if __name__ == "__main__": unittest.main()
 
