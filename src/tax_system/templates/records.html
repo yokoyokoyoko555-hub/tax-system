@@ -117,10 +117,10 @@
     直接書き換えられます（案分の合算はせず、入力した内容でそのまま置き換わります）。
     {% else %}
     販売側（数量・単価・代価・相手方名など）の入力ミスを、ここから直接書き換えられます。
-    数量を変えたときは、単価・代価も合わせて直してください（自動では計算しません）。
     {% endif %}
+    代価は単価×数量で自動計算されます（必要なら手で直せます）。
   </p>
-  <form method="post" action="{{ url_for('comparison_edit_purchase') }}"
+  <form method="post" action="{{ url_for('comparison_edit_purchase') }}" class="side-edit"
         style="display:flex; gap:0.5rem; align-items:flex-end; flex-wrap:wrap;">
     <input type="hidden" name="import_id" value="{{ imp.id }}">
     <input type="hidden" name="sheet" value="{{ sheet }}">
@@ -130,7 +130,7 @@
     {% for f in fields %}
     <input type="hidden" name="field_header_{{ loop.index0 }}" value="{{ f.header }}">
     <label>{{ f.header }}
-      <input type="text" name="field_value_{{ loop.index0 }}" value="{{ f.value if f.value is not none else '' }}" style="width:9em;">
+      <input type="text" name="field_value_{{ loop.index0 }}" data-header="{{ f.header }}" value="{{ f.value | num if f.value is not none else '' }}" style="width:9em;">
     </label>
     {% endfor %}
     <button type="submit" class="button small">修正する</button>
@@ -138,6 +138,30 @@
 </section>
 {% endif %}
 {% endfor %}
+<script>
+// 代価 = 単価 × 数量 を自動計算する。見出しは「単価(税込）」「代価（税込）」のように
+// かっこの全角・半角が混ざるので、そろえてから単価と代価の組を作る。
+(function () {
+  const norm = (h) => h.replace(/\s/g, "").replace(/\(/g, "（").replace(/\)/g, "）");
+  const num = (v) => parseFloat(String(v).replace(/[,，円]/g, ""));
+  document.querySelectorAll("form.side-edit").forEach((form) => {
+    const inputs = Array.from(form.querySelectorAll("input[data-header]"));
+    const qty = inputs.find((i) => i.dataset.header.includes("数量"));
+    if (!qty) return;
+    inputs.filter((i) => i.dataset.header.includes("代価")).forEach((amount) => {
+      const key = norm(amount.dataset.header).replace("代価", "単価");
+      const unit = inputs.find((i) => norm(i.dataset.header) === key);
+      if (!unit) return;
+      const calc = () => {
+        const u = num(unit.value), q = num(qty.value);
+        if (isFinite(u) && isFinite(q)) amount.value = String(Math.round(u * q * 100) / 100);
+      };
+      unit.addEventListener("input", calc);
+      qty.addEventListener("input", calc);
+    });
+  });
+})();
+</script>
 
 {% if can_link_purchase %}
 <section class="card">
@@ -204,7 +228,8 @@
         <input type="hidden" name="sheet" value="{{ sheet }}">
         <input type="hidden" name="row_no" value="{{ row_no }}">
         <input type="hidden" name="ledger_record_id" value="{{ r.id }}">
-        <span style="flex:1;">{{ r.name }} / {{ r.product or "（商品名未登録）" }} / {{ r.date }} / 仕入合計{{ r.amount | num }}円
+        <span style="flex:1;">{{ r.name }} / {{ r.product or "（商品名未登録）" }} / {{ r.date }} /
+          {% if r.qty not in (none, "") and r.unit not in (none, "") %}{{ r.qty | num }}個 × {{ r.unit | num }}円 = {% endif %}仕入合計{{ r.amount | num }}円
           {% if r.used_amount %}<strong>（案分済み {{ r.used_amount | num }}円 ／ 残り {{ r.remaining | num if r.remaining is not none else "-" }}円）</strong>{% endif %}
           {% if r.note %}<br><span class="muted">備考: {{ r.note }}</span>{% endif %}</span>
         <label>数量 <input type="number" name="qty" step="any" min="0" value="{{ purchase_shortfall.shortfall | num if purchase_shortfall else 1 }}" required style="width:5em;"></label>

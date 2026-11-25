@@ -1740,7 +1740,7 @@ class TaxSystem:
                     continue  # 案分で使い切っている
             matches.append({
                 "id": row["id"], "name": data.get("名前"), "product": data.get("商品名"),
-                "qty": data.get("個数"), "date": data.get("日時"), "amount": data.get("金額"),
+                "qty": data.get("個数"), "unit": data.get("単価"), "date": data.get("日時"), "amount": data.get("金額"),
                 "note": (data.get("備考") or "").strip(),
                 "purchase_date": _to_date(data.get("日時")),
                 "purchase_at": _to_datetime(data.get("日時")),
@@ -2018,9 +2018,52 @@ class TaxSystem:
             else:
                 number = _to_number(raw_value)
                 values[idx] = number if number is not None else raw_value
+        # 代価が空欄で送られてきたときは、単価×数量で埋める（画面側でも自動計算している）。
+        norm = lambda h: str(h or "").replace(" ", "").replace("(", "（").replace(")", "）")
+        qty_idx = _index_of(side_headers, "数量")
+        for header, raw_value in values_by_header.items():
+            if "代価" not in header or (raw_value or "").strip():
+                continue
+            amount_idx = _index_of(side_headers, header)
+            unit_idx = next((i for i, h in enumerate(side_headers)
+                             if norm(h) == norm(header).replace("代価", "単価")), None)
+            if amount_idx is None or unit_idx is None or qty_idx is None:
+                continue
+            unit, qty = _to_number(values[offset + unit_idx]), _to_number(values[offset + qty_idx])
+            if unit is not None and qty is not None:
+                values[offset + amount_idx] = round(unit * qty, 2)
         data["values"] = values
 
         with closing(self.connect()) as db, db:
+            # 案分（manual_split）で紐づけた行は、古物台帳の残りを allocations.used_qty/used_amount から
+            # 計算している。仕入側の数量・代価を直したら、そちらも同じ値に合わせる（合わせないと
+            # 古物台帳側の「案分済み／残り」に反映されない）。
+            alloc = db.execute(
+                "SELECT id, ledger_record_id FROM allocations WHERE sale_import_id=? AND sale_sheet=? "
+                "AND sale_row_no=? AND status='manual_split'",
+                (import_id, sheet, row_no),
+            ).fetchone() if side == "purchase" else None
+            if alloc:
+                p_qty_idx = _index_of(side_headers, "数量")
+                p_amount_idx = _index_of(side_headers, "代価", contains=True)
+                new_qty = _to_number(values[p_qty_idx]) if p_qty_idx is not None else None
+                new_amount = _to_number(values[p_amount_idx]) if p_amount_idx is not None else None
+                ledger = db.execute("SELECT data_json FROM records WHERE id=?", (alloc["ledger_record_id"],)).fetchone()
+                total = _to_number(json.loads(ledger["data_json"]).get("金額")) if ledger else None
+                others = db.execute(
+                    "SELECT COALESCE(SUM(used_amount), 0) FROM allocations WHERE ledger_record_id=? "
+                    "AND status='manual_split' AND id != ?",
+                    (alloc["ledger_record_id"], alloc["id"]),
+                ).fetchone()[0]
+                if total is not None and new_amount is not None and others + new_amount > total + 0.5:
+                    raise ValueError(
+                        f"案分の合計が元の仕入金額（{total:,.0f}円）を超えます"
+                        f"（ほかの行で案分済み {others:,.0f}円・残り {total - others:,.0f}円）"
+                    )
+                db.execute(
+                    "UPDATE allocations SET used_qty=?, used_amount=?, note=? WHERE id=?",
+                    (new_qty, new_amount, f"案分（数量{new_qty}・金額{new_amount}円）", alloc["id"]),
+                )
             db.execute(
                 "UPDATE records SET data_json=? WHERE import_id=? AND sheet_name=? AND row_no=?",
                 (json_text(data), import_id, sheet, row_no),

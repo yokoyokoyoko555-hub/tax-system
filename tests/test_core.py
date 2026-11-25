@@ -2440,6 +2440,17 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
         self.assertEqual("4あーるさん", values[10])
         self.assertEqual("三浦俊介", values[9])  # untouched field stays as-is
 
+    def test_update_comparison_purchase_side_fills_blank_amount_from_unit_times_qty(self):
+        comparison_id = self.app.import_comparison(self.write_comparison_with_partial_purchase())
+
+        # 単価は半角かっこ・代価は全角かっこの見出しでも組になる
+        self.app.update_comparison_purchase_side(comparison_id, "輸出販売", 3, {
+            "単価(税込）": "1100", "数量": "4", "代価（税込）": "",
+        })
+
+        values = self.app.get_records(comparison_id)[0][0]["data"]["values"]
+        self.assertEqual(4400, values[7])
+
     def test_update_comparison_sale_side_fixes_the_sale_quantity_without_touching_purchase_side(self):
         # both sides have a 数量 / 相手方名 header; side="sale" must edit only the sale-side ones
         comparison_id = self.app.import_comparison(self.write_comparison_with_partial_purchase())
@@ -2505,6 +2516,34 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 5, box_id, qty=1, amount=100)
 
+    def test_editing_a_prorated_purchase_side_updates_the_ledger_remaining(self):
+        ledger_id = self.app.import_ledger(self.write_ledger([
+            ["2026-05-01", "箱売り太郎", "はこうりたろう", "1990-01-01", "住所", "000",
+             "未開封商品", "22", "3000", "66000", "頂上の強者パック"],
+        ]))
+        self.app.merge_ledger_imports([ledger_id])
+        comparison_id = self.app.import_comparison(self.write_comparison_xlsx([
+            ("カードA", "2026-06-03", 3000, "海外客1"),
+            ("カードB", "2026-06-04", 2000, "海外客2"),
+        ]))
+        box_id = self.app.search_ledger("頂上")[0][0]["id"]
+        self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 3, box_id, qty=3, amount=1100)
+        headers = {f["header"] for f in self.app.get_comparison_purchase_fields(comparison_id, "輸出販売", 3)}
+        qty_h = next(h for h in headers if "数量" in h)
+        amount_h = next(h for h in headers if "代価" in h)
+
+        self.app.update_comparison_purchase_side(comparison_id, "輸出販売", 3, {qty_h: "4", amount_h: "4400"})
+
+        usage = self.app.ledger_record_usage(box_id)
+        self.assertEqual(4400, usage["used_amount"])
+        self.assertEqual(61600, usage["remaining"])
+
+        self.app.link_comparison_purchase_manually(comparison_id, "輸出販売", 4, box_id, qty=1, amount=60000)
+        with self.assertRaises(ValueError) as ctx:
+            self.app.update_comparison_purchase_side(comparison_id, "輸出販売", 3, {amount_h: "7000"})
+        self.assertIn("元の仕入金額", str(ctx.exception))
+        self.assertEqual(4400, self.app.ledger_record_usage(box_id)["used_amount"] - 60000)
+
     def test_a_record_matched_automatically_cannot_be_linked_or_found_again(self):
         ledger_id = self.app.import_ledger(self.write_ledger([
             ["2026-05-01", "客A", "", "", "", "", "特定カードZ", "1", "400", "400", ""],
@@ -2562,6 +2601,8 @@ class LinkComparisonPurchaseManuallyTests(unittest.TestCase):
         self.assertEqual(1, total)
         self.assertEqual("客A", results[0]["name"])
         self.assertEqual("福袋より案分", results[0]["note"])
+        self.assertEqual("1", results[0]["qty"])
+        self.assertEqual("1000", results[0]["unit"])
 
     def test_search_ledger_can_narrow_to_a_purchase_month(self):
         ledger_id = self.app.import_ledger(self.write_ledger([
